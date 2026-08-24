@@ -26,7 +26,7 @@ async def stream_trades():
                     value=json.dumps(trade).encode('utf-8'),
                     callback=delivery_report,
                 )
-                producer.poll(0)
+                producer.poll(0)    # triggers delivery callbacks, non-blocking
         finally:
             producer.flush()  #anything queued gets sent before exit
 

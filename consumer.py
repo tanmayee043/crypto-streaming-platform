@@ -17,14 +17,14 @@ print(f"Listening on topic '{TOPIC}'...")
 
 try:
     while True:
-        msg = consumer.poll(1.0)
+        msg = consumer.poll(1.0)    # Poll data from kafka every 1 sec
         if not msg:
             continue
 
         if msg.error():
             print(f"Consumer error: {msg.error()}")
             continue
-        
+
         trade = json.loads(msg.value().decode("utf-8"))
         price = float(trade["p"])
         quantity = float(trade["q"])
