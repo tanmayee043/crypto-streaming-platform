@@ -1,0 +1,13 @@
+CREATE TABLE IF NOT EXISTS trades (
+    id BIGSERIAL PRIMARY KEY,
+    symbol TEXT NOT NULL,
+    trade_id BIGINT NOT NULL,
+    trade_time TIMESTAMPTZ NOT NULL,
+    price DOUBLE PRECISION NOT NULL,
+    quantity DOUBLE PRECISION NOT NULL,
+    price_z DOUBLE PRECISION,
+    volume_z DOUBLE PRECISION,
+    is_anomaly BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (symbol, trade_id)
+);

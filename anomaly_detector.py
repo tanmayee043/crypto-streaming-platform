@@ -2,20 +2,28 @@ import json
 import statistics
 import time
 from collections import deque
-from confluent_kafka import Consumer
+from confluent_kafka import Consumer, Producer
 
 KAFKA_BOOTSTRAP_SERVERS = "localhost:9092"
-TOPIC = "crypto-trades"
+INPUT_TOPIC = "crypto-trades"
 WINDOW_SECONDS = 300         # Good value: 60 # how far back we look
 MIN_SAMPLES = 20             # Good value: 30 # don't flag anomalies until we have enough data to trust the average
 Z_SCORE_THRESHOLD = 3.0      # max z-score how many std devs away counts as "unusual"
+
+OUTPUT_TOPIC = "trade-analytics"
 
 consumer = Consumer({
     "bootstrap.servers": KAFKA_BOOTSTRAP_SERVERS,
     "group.id": "crypto-anomaly-detector",
     "auto.offset.reset": "latest",
 })
-consumer.subscribe([TOPIC])
+consumer.subscribe([INPUT_TOPIC])
+
+producer = Producer({"bootstrap.servers": KAFKA_BOOTSTRAP_SERVERS})
+
+def producer_delivery_report(err, msg):
+    if err:
+        print(f"Delivery failed: {err}")
 
 # sliding window: each entry is (timestamp, price, quantity)
 window = deque()
@@ -31,7 +39,8 @@ def z_score(value, values):
         return 0.0
     return (value - mean) / stdev      # z-score
 
-print(f"Watching '{TOPIC}' — window={WINDOW_SECONDS}s, threshold={Z_SCORE_THRESHOLD} std dev")
+print(f"Watching '{INPUT_TOPIC}' — window={WINDOW_SECONDS}s, threshold={Z_SCORE_THRESHOLD} std dev")
+print(f"Publishing results to '{OUTPUT_TOPIC}'")
 
 try:
     while True:
@@ -75,7 +84,28 @@ try:
             print(f"🚨 {' | '.join(flags)} — price={price:.2f}, qty={quantity:.5f}")
         else:
             print(f"Price: {price:.2f}  Qty: {quantity:.5f}")
+
+
+        # Publish the processed result downstream for storage_consumer.py to persist
+        result = {
+            "symbol": trade["s"],
+            "trade_id": trade["t"],
+            "trade_time": trade["T"],  # Binance sends epoch milliseconds
+            "price": price,
+            "quantity": quantity,
+            "price_z": price_z,
+            "volume_z": vol_z,
+            "is_anomaly": bool(flags),
+        }
+        producer.produce(
+            OUTPUT_TOPIC,
+            value=json.dumps(result).encode("utf-8"),
+            callback=producer_delivery_report,
+        )
+        producer.poll(0)
+
 except KeyboardInterrupt:
     pass
 finally:
     consumer.close()
+    producer.flush()
