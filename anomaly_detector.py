@@ -6,8 +6,7 @@ from confluent_kafka import Consumer, Producer
 
 KAFKA_BOOTSTRAP_SERVERS = "localhost:9092"
 INPUT_TOPIC = "crypto-trades"
-WINDOW_SECONDS = 300         # Good value: 60 # how far back we look
-MIN_SAMPLES = 20             # Good value: 30 # don't flag anomalies until we have enough data to trust the average
+WINDOW_SIZE = 30
 Z_SCORE_THRESHOLD = 3.0      # max z-score how many std devs away counts as "unusual"
 
 OUTPUT_TOPIC = "trade-analytics"
@@ -25,12 +24,8 @@ def producer_delivery_report(err, msg):
     if err:
         print(f"Delivery failed: {err}")
 
-# sliding window: each entry is (timestamp, price, quantity)
-window = deque()
-
-def prune_old(now):
-    while window and now - window[0][0] > WINDOW_SECONDS:
-        window.popleft()
+# fixed-size window: deque with maxlen automatically drops the oldest entry
+window = deque(maxlen = WINDOW_SIZE)
 
 def z_score(value, values):
     mean = statistics.mean(values)
@@ -39,7 +34,7 @@ def z_score(value, values):
         return 0.0
     return (value - mean) / stdev      # z-score
 
-print(f"Watching '{INPUT_TOPIC}' — window={WINDOW_SECONDS}s, threshold={Z_SCORE_THRESHOLD} std dev")
+print(f"Watching '{INPUT_TOPIC}' — window={WINDOW_SIZE} trades, threshold={Z_SCORE_THRESHOLD} std dev")
 print(f"Publishing results to '{OUTPUT_TOPIC}'")
 
 try:
@@ -54,22 +49,15 @@ try:
         trade = json.loads(msg.value().decode("utf-8"))
         price = float(trade["p"])
         quantity = float(trade["q"])
-        now = time.time()
+        
+        window.append((price, quantity))
 
-        #debug code
-        if window:
-            gap = now - window[-1][0]
-            print(f"[{gap:.1f}s since last trade]", end=" ")
-
-        window.append((now, price, quantity))
-        prune_old(now)
-
-        if len(window) < MIN_SAMPLES:
-            print(f"Price: {price:.2f}  Qty: {quantity:.5f}  (warming up: {len(window)}/{MIN_SAMPLES})")
+        if len(window) < WINDOW_SIZE:
+            print(f"Price: {price:.2f}  Qty: {quantity:.5f}  (warming up: {len(window)}/{WINDOW_SIZE})")
             continue
 
-        prices = [p for _, p, _ in window]
-        volumes = [q for _, _, q in window]
+        prices = [p for p, _ in window]
+        volumes = [q for _, q in window]
 
         price_z = z_score(price, prices)
         vol_z = z_score(quantity, volumes)
