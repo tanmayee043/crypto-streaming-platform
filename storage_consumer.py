@@ -41,11 +41,12 @@ try:
         trade_time = datetime.fromtimestamp(r["trade_time"] / 1000, tz=timezone.utc)
 
         cur.execute("""
-            INSERT INTO trades (symbol, trade_id, trade_time, price, quantity, price_z, volume_z, is_anomaly)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            INSERT INTO trades (symbol, trade_id, trade_time, price, quantity, price_z, volume_z, is_anomaly, anomaly_type)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (symbol, trade_id) DO NOTHING
         """, (r["symbol"], r["trade_id"], trade_time, r["price"], r["quantity"],
-              r["price_z"], r["volume_z"], r["is_anomaly"]))
+            r["price_z"], r["volume_z"], r["is_anomaly"], r["anomaly_type"]))
+        
 except KeyboardInterrupt:
     pass
 finally:
