@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Crypto Anomaly Dashboard</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+    <style>
+        body { font-family: sans-serif; background: #111; color: #eee; padding: 20px; }
+        #anomaly-list { margin-top: 20px; }
+        .anomaly-row { color: #ff5555; font-family: monospace; }
+    </style>
+</head>
+<body>
+    <h1>BTC/USDT — Live Trade Stream</h1>
+    <canvas id="priceChart" height="100"></canvas>
+
+    <h2>Recent Anomalies</h2>
+    <div id="anomaly-list">Loading...</div>
+
+    <script>
+        const ctx = document.getElementById('priceChart').getContext('2d');
+        const chart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: [],
+                datasets: [{
+                    label: 'Price (USDT)',
+                    data: [],
+                    borderColor: '#4ea8ff',
+                    pointBackgroundColor: [],
+                    pointRadius: [],
+                    tension: 0.2,
+                }]
+            },
+            options: {
+                animation: false,
+                scales: {
+                    x: { ticks: { color: '#aaa' } },
+                    y: { ticks: { color: '#aaa' } }
+                }
+            }
+        });
+
+        async function refreshChart() {
+            const res = await fetch('/trades?limit=50');
+            const trades = (await res.json()).reverse(); // oldest first, so the chart reads left-to-right
+
+            chart.data.labels = trades.map(t => new Date(t.trade_time).toLocaleTimeString());
+            chart.data.datasets[0].data = trades.map(t => t.price);
+            // highlight anomalies as bigger, red points; normal trades stay small and blue
+            chart.data.datasets[0].pointBackgroundColor = trades.map(t => t.is_anomaly ? '#ff4444' : '#4ea8ff');
+            chart.data.datasets[0].pointRadius = trades.map(t => t.is_anomaly ? 6 : 2);
+            chart.update();
+        }
+
+        async function refreshAnomalyList() {
+            const res = await fetch('/anomalies?limit=10');
+            const anomalies = await res.json();
+            const container = document.getElementById('anomaly-list');
+
+            if (anomalies.length === 0) {
+                container.innerHTML = '<p>No anomalies detected yet.</p>';
+                return;
+            }
+
+            container.innerHTML = anomalies.map(a =>
+                `<div class="anomaly-row">
+                    ${new Date(a.trade_time).toLocaleTimeString()} —
+                    price=${a.price.toFixed(2)} qty=${a.quantity.toFixed(5)}
+                    (price_z=${a.price_z.toFixed(2)}, vol_z=${a.volume_z.toFixed(2)})
+                </div>`
+            ).join('');
+        }
+
+        function refreshAll() {
+            refreshChart();
+            refreshAnomalyList();
+        }
+
+        refreshAll();
+        setInterval(refreshAll, 3000); // poll every 3 seconds
+    </script>
+</body>
+</html>

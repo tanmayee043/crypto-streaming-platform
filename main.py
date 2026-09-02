@@ -2,6 +2,7 @@ from fastapi import FastAPI
 import psycopg2.extras
 import os
 from dotenv import load_dotenv
+from fastapi.staticfiles import StaticFiles
 
 load_dotenv()
 
@@ -34,3 +35,5 @@ def get_trades(limit: int = 100):
     rows = cur.fetchall()
     conn.close()
     return rows
+
+app.mount("/dashboard", StaticFiles(directory="static", html=True), name="dashboard")
