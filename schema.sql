@@ -8,6 +8,7 @@ CREATE TABLE IF NOT EXISTS trades (
     price_z DOUBLE PRECISION,
     volume_z DOUBLE PRECISION,
     is_anomaly BOOLEAN NOT NULL DEFAULT FALSE,
+    anomaly_type TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     UNIQUE (symbol, trade_id)
 );
