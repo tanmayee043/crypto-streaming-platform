@@ -129,8 +129,11 @@
 
         function flashAnomaly(a) {
             const banner = document.getElementById('flash-banner');
+            const label = a.anomaly_type === 'both' ? 'PRICE + VOLUME'
+                        : a.anomaly_type === 'price' ? 'PRICE'
+                        : 'VOLUME';
             banner.textContent =
-                `🚨 Anomaly detected — price=${a.price.toFixed(2)} qty=${a.quantity.toFixed(5)} ` +
+                `🚨 ${label} ANOMALY — price=${a.price.toFixed(2)} qty=${a.quantity.toFixed(5)} ` +
                 `(price_z=${a.price_z.toFixed(2)}, vol_z=${a.volume_z.toFixed(2)})`;
             banner.classList.add('show');
             setTimeout(() => banner.classList.remove('show'), 6000);
@@ -181,6 +184,7 @@
 
             container.innerHTML = anomalies.map(a =>
                 `<div class="anomaly-row">
+                    [${(a.anomaly_type || '').toUpperCase()}]
                     ${new Date(a.trade_time).toLocaleTimeString()} —
                     price=${a.price.toFixed(2)} qty=${a.quantity.toFixed(5)}
                     (price_z=${a.price_z.toFixed(2)}, vol_z=${a.volume_z.toFixed(2)})
