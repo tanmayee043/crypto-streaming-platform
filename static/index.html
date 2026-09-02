@@ -4,20 +4,94 @@
     <title>Crypto Anomaly Dashboard</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
     <style>
-        body { font-family: sans-serif; background: #111; color: #eee; padding: 20px; }
-        #anomaly-list { margin-top: 20px; }
-        .anomaly-row { color: #ff5555; font-family: monospace; }
+        * { box-sizing: border-box; }
+        body {
+            font-family: -apple-system, sans-serif;
+            background: #0d1117; color: #e6e6e6;
+            padding: 24px; margin: 0;
+        }
+        h1 { display: flex; align-items: center; gap: 10px; font-size: 22px; }
+
+        .live-dot {
+            width: 10px; height: 10px; border-radius: 50%;
+            background: #3fb950;
+            animation: pulse 1.5s infinite;
+        }
+        @keyframes pulse {
+            0%   { box-shadow: 0 0 0 0 rgba(63, 185, 80, 0.6); }
+            70%  { box-shadow: 0 0 0 8px rgba(63, 185, 80, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(63, 185, 80, 0); }
+        }
+        .live-dot.stale { background: #f85149; animation: none; }
+
+        .stats-row {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 14px;
+            margin: 20px 0;
+        }
+        .stat-card {
+            background: #161b22; border: 1px solid #30363d;
+            border-radius: 8px; padding: 16px;
+        }
+        .stat-label { font-size: 12px; color: #8b949e; text-transform: uppercase; letter-spacing: 0.05em; }
+        .stat-value { font-size: 26px; font-weight: 600; margin-top: 6px; }
+        .stat-value.up   { color: #3fb950; }
+        .stat-value.down { color: #f85149; }
+
+        #flash-banner {
+            display: none;
+            background: #3d1418; border: 1px solid #f85149; color: #ffb3ab;
+            padding: 12px 16px; border-radius: 8px; margin-bottom: 16px;
+            font-weight: 600;
+        }
+        #flash-banner.show { display: block; animation: flashIn 0.3s ease-out; }
+        @keyframes flashIn {
+            from { opacity: 0; transform: translateY(-8px); }
+            to   { opacity: 1; transform: translateY(0); }
+        }
+
+        canvas { background: #161b22; border-radius: 8px; padding: 10px; }
+        h2 { font-size: 15px; color: #8b949e; margin-top: 28px; }
+        .anomaly-row {
+            font-family: monospace; font-size: 13px; color: #ffb3ab;
+            padding: 6px 0; border-bottom: 1px solid #21262d;
+        }
     </style>
 </head>
 <body>
-    <h1>BTC/USDT — Live Trade Stream</h1>
-    <canvas id="priceChart" height="100"></canvas>
+    <h1><span class="live-dot" id="live-dot"></span> BTC/USDT — Live Trade Stream</h1>
 
-    <h2>Recent Anomalies</h2>
+    <div id="flash-banner"></div>
+
+    <div class="stats-row">
+        <div class="stat-card">
+            <div class="stat-label">Current Price</div>
+            <div class="stat-value" id="stat-price">—</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-label">Recent Volume (30 trades)</div>
+            <div class="stat-value" id="stat-volume">—</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-label">Anomalies Detected</div>
+            <div class="stat-value" id="stat-anomalies">—</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-label">Last Update</div>
+            <div class="stat-value" id="stat-updated" style="font-size:16px;">—</div>
+        </div>
+    </div>
+
+    <canvas id="priceChart" height="90"></canvas>
+
+    <h2>RECENT ANOMALIES</h2>
     <div id="anomaly-list">Loading...</div>
 
     <script>
         const ctx = document.getElementById('priceChart').getContext('2d');
+        let lastSeenAnomalyId = null; // tracks the newest anomaly we've already flashed for
+
         const chart = new Chart(ctx, {
             type: 'line',
             data: {
@@ -26,6 +100,14 @@
                     label: 'Price (USDT)',
                     data: [],
                     borderColor: '#4ea8ff',
+                    segment: {
+                        // color each line SEGMENT based on whether price rose or fell
+                        borderColor: ctx => {
+                            const { p0, p1 } = ctx;
+                            if (!p0 || !p1) return '#4ea8ff';
+                            return p1.parsed.y >= p0.parsed.y ? '#3fb950' : '#f85149';
+                        }
+                    },
                     pointBackgroundColor: [],
                     pointRadius: [],
                     tension: 0.2,
@@ -33,23 +115,49 @@
             },
             options: {
                 animation: false,
+                plugins: { legend: { display: false } },
                 scales: {
-                    x: { ticks: { color: '#aaa' } },
-                    y: { ticks: { color: '#aaa' } }
+                    x: { ticks: { color: '#8b949e' }, grid: { color: '#21262d' } },
+                    y: { ticks: { color: '#8b949e' }, grid: { color: '#21262d' } }
                 }
             }
         });
 
+        function setLiveDot(ok) {
+            document.getElementById('live-dot').classList.toggle('stale', !ok);
+        }
+
+        function flashAnomaly(a) {
+            const banner = document.getElementById('flash-banner');
+            banner.textContent =
+                `🚨 Anomaly detected — price=${a.price.toFixed(2)} qty=${a.quantity.toFixed(5)} ` +
+                `(price_z=${a.price_z.toFixed(2)}, vol_z=${a.volume_z.toFixed(2)})`;
+            banner.classList.add('show');
+            setTimeout(() => banner.classList.remove('show'), 6000);
+        }
+
         async function refreshChart() {
             const res = await fetch('/trades?limit=50');
-            const trades = (await res.json()).reverse(); // oldest first, so the chart reads left-to-right
+            const trades = (await res.json()).reverse(); // oldest first, chart reads left-to-right
 
             chart.data.labels = trades.map(t => new Date(t.trade_time).toLocaleTimeString());
             chart.data.datasets[0].data = trades.map(t => t.price);
-            // highlight anomalies as bigger, red points; normal trades stay small and blue
             chart.data.datasets[0].pointBackgroundColor = trades.map(t => t.is_anomaly ? '#ff4444' : '#4ea8ff');
             chart.data.datasets[0].pointRadius = trades.map(t => t.is_anomaly ? 6 : 2);
             chart.update();
+
+            if (trades.length > 0) {
+                const latest = trades[trades.length - 1];
+                const prev = trades.length > 1 ? trades[trades.length - 2] : latest;
+                const priceEl = document.getElementById('stat-price');
+                priceEl.textContent = `$${latest.price.toFixed(2)}`;
+                priceEl.className = 'stat-value ' + (latest.price >= prev.price ? 'up' : 'down');
+
+                const totalVolume = trades.reduce((sum, t) => sum + t.quantity, 0);
+                document.getElementById('stat-volume').textContent = totalVolume.toFixed(4);
+
+                document.getElementById('stat-updated').textContent = new Date().toLocaleTimeString();
+            }
         }
 
         async function refreshAnomalyList() {
@@ -57,9 +165,18 @@
             const anomalies = await res.json();
             const container = document.getElementById('anomaly-list');
 
+            document.getElementById('stat-anomalies').textContent = anomalies.length;
+
             if (anomalies.length === 0) {
-                container.innerHTML = '<p>No anomalies detected yet.</p>';
+                container.innerHTML = '<p style="color:#8b949e;">No anomalies detected yet.</p>';
                 return;
+            }
+
+            // flash a notification only if the newest anomaly is one we haven't seen yet
+            const newest = anomalies[0];
+            if (newest.trade_id !== lastSeenAnomalyId) {
+                if (lastSeenAnomalyId !== null) flashAnomaly(newest); // skip flash on very first load
+                lastSeenAnomalyId = newest.trade_id;
             }
 
             container.innerHTML = anomalies.map(a =>
@@ -71,13 +188,18 @@
             ).join('');
         }
 
-        function refreshAll() {
-            refreshChart();
-            refreshAnomalyList();
+        async function refreshAll() {
+            try {
+                await Promise.all([refreshChart(), refreshAnomalyList()]);
+                setLiveDot(true);
+            } catch (e) {
+                setLiveDot(false); // API unreachable — show red instead of green
+                console.error('Refresh failed:', e);
+            }
         }
 
         refreshAll();
-        setInterval(refreshAll, 3000); // poll every 3 seconds
+        setInterval(refreshAll, 3000);
     </script>
 </body>
 </html>
