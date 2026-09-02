@@ -1,6 +1,5 @@
 import json
 import statistics
-import time
 from collections import deque
 from confluent_kafka import Consumer, Producer
 
