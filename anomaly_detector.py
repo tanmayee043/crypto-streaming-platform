@@ -61,6 +61,7 @@ try:
         price_z = z_score(price, prices)
         vol_z = z_score(quantity, volumes)
 
+        #To check if anomaly has occurred
         flags = []
         if abs(price_z) > Z_SCORE_THRESHOLD:
             flags.append(f"PRICE ANOMALY (z={price_z:.2f})")
@@ -72,6 +73,14 @@ try:
         else:
             print(f"Price: {price:.2f}  Qty: {quantity:.5f}")
 
+        #To store what type of anomaly
+        anomaly_type = None
+        if abs(price_z) > Z_SCORE_THRESHOLD and abs(vol_z) > Z_SCORE_THRESHOLD:
+            anomaly_type = "both"
+        elif abs(price_z) > Z_SCORE_THRESHOLD:
+            anomaly_type = "price"
+        elif abs(vol_z) > Z_SCORE_THRESHOLD:
+            anomaly_type = "volume"
 
         # Publish the processed result downstream for storage_consumer.py to persist
         result = {
@@ -83,6 +92,7 @@ try:
             "price_z": price_z,
             "volume_z": vol_z,
             "is_anomaly": bool(flags),
+            "anomaly_type": anomaly_type,   # "price" | "volume" | "both" | None
         }
         producer.produce(
             OUTPUT_TOPIC,
