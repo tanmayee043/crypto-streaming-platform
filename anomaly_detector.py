@@ -3,12 +3,23 @@ import statistics
 from collections import deque
 from confluent_kafka import Consumer, Producer
 
+import logging
+import time
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s"
+)
+log = logging.getLogger("anomaly_detector")
+
 KAFKA_BOOTSTRAP_SERVERS = "localhost:9092"
 INPUT_TOPIC = "crypto-trades"
 WINDOW_SIZE = 30
 Z_SCORE_THRESHOLD = 3.0      # max z-score how many std devs away counts as "unusual"
 
 OUTPUT_TOPIC = "trade-analytics"
+
+METRICS_INTERVAL_SECONDS = 60
 
 consumer = Consumer({
     "bootstrap.servers": KAFKA_BOOTSTRAP_SERVERS,
@@ -33,8 +44,27 @@ def z_score(value, values):
         return 0.0
     return (value - mean) / stdev      # z-score
 
-print(f"Watching '{INPUT_TOPIC}' — window={WINDOW_SIZE} trades, threshold={Z_SCORE_THRESHOLD} std dev")
-print(f"Publishing results to '{OUTPUT_TOPIC}'")
+# --- metrics ---
+processed_count = 0
+anomaly_count = 0
+last_metrics_log = time.time()
+
+def maybe_log_metrics():
+    global processed_count, anomaly_count, last_metrics_log
+    now = time.time()
+    elapsed = now - last_metrics_log
+    if elapsed >= METRICS_INTERVAL_SECONDS:
+        rate = anomaly_count / processed_count * 100 if processed_count else 0
+        log.info(
+            f"Processed {processed_count} trades in {elapsed:.0f}s, "
+            f"{anomaly_count} anomalies flagged ({rate:.1f}%)"
+        )
+        processed_count = 0
+        anomaly_count = 0
+        last_metrics_log = now
+
+log.info(f"Watching '{INPUT_TOPIC}' — window={WINDOW_SIZE} trades, threshold={Z_SCORE_THRESHOLD} std dev")
+log.info(f"Publishing results to '{OUTPUT_TOPIC}'")
 
 try:
     while True:
@@ -61,19 +91,6 @@ try:
         price_z = z_score(price, prices)
         vol_z = z_score(quantity, volumes)
 
-        #To check if anomaly has occurred
-        flags = []
-        if abs(price_z) > Z_SCORE_THRESHOLD:
-            flags.append(f"PRICE ANOMALY (z={price_z:.2f})")
-        if abs(vol_z) > Z_SCORE_THRESHOLD:
-            flags.append(f"VOLUME ANOMALY (z={vol_z:.2f})")
-
-        if flags:
-            print(f"🚨 {' | '.join(flags)} — price={price:.2f}, qty={quantity:.5f}")
-        else:
-            print(f"Price: {price:.2f}  Qty: {quantity:.5f}")
-
-        #To store what type of anomaly
         anomaly_type = None
         if abs(price_z) > Z_SCORE_THRESHOLD and abs(vol_z) > Z_SCORE_THRESHOLD:
             anomaly_type = "both"
@@ -81,6 +98,13 @@ try:
             anomaly_type = "price"
         elif abs(vol_z) > Z_SCORE_THRESHOLD:
             anomaly_type = "volume"
+
+        is_anomaly = anomaly_type is not None
+        processed_count += 1
+        if is_anomaly:
+            anomaly_count += 1
+            log.info(f"🚨 {anomaly_type.upper()} ANOMALY — price={price:.2f}, qty={quantity:.5f}, "
+                      f"price_z={price_z:.2f}, vol_z={vol_z:.2f}")
 
         # Publish the processed result downstream for storage_consumer.py to persist
         result = {
@@ -91,7 +115,7 @@ try:
             "quantity": quantity,
             "price_z": price_z,
             "volume_z": vol_z,
-            "is_anomaly": bool(flags),
+            "is_anomaly": is_anomaly,
             "anomaly_type": anomaly_type,   # "price" | "volume" | "both" | None
         }
         producer.produce(
@@ -100,6 +124,7 @@ try:
             callback=producer_delivery_report,
         )
         producer.poll(0)
+        maybe_log_metrics()
 
 except KeyboardInterrupt:
     pass
