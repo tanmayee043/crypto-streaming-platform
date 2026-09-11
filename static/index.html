@@ -164,11 +164,15 @@
         }
 
         async function refreshAnomalyList() {
-            const res = await fetch('/anomalies?limit=10');
-            const anomalies = await res.json();
+            const [listRes, countRes] = await Promise.all([
+                fetch('/anomalies?limit=10'),
+                fetch('/anomalies/count')
+            ]);
+            const anomalies = await listRes.json();
+            const countData = await countRes.json();
             const container = document.getElementById('anomaly-list');
 
-            document.getElementById('stat-anomalies').textContent = anomalies.length;
+            document.getElementById('stat-anomalies').textContent = countData.count;
 
             if (anomalies.length === 0) {
                 container.innerHTML = '<p style="color:#8b949e;">No anomalies detected yet.</p>';

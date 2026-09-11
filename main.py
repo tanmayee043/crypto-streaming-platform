@@ -36,4 +36,13 @@ def get_trades(limit: int = 100):
     conn.close()
     return rows
 
+@app.get("/anomalies/count")
+def get_anomaly_count():
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT COUNT(*) AS count FROM trades WHERE is_anomaly = TRUE")
+    result = cur.fetchone()
+    conn.close()
+    return result
+
 app.mount("/dashboard", StaticFiles(directory="static", html=True), name="dashboard")
