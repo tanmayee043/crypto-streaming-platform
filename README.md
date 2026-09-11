@@ -54,6 +54,15 @@ Detection and storage are deliberately split into independent services connected
 | Infrastructure | Docker Compose |
 | Observability | Python `logging`, Kafka UI |
 
+## Metrics
+
+Measured from a ~30-minute continuous run against Binance.US's live BTC/USDT feed:
+
+- **Throughput:** ~1.15 trades/sec sustained (peaked at ~3 trades/sec during a burst of market activity). Binance.US's trade volume is noticeably variable - an earlier, quieter test session on the same pipeline saw as low as ~0.02 trades/sec, which is what motivated the count-based (rather than time-based) anomaly detection window described below.
+- **Anomaly rate:** 91 anomalies out of 1,525 trades processed post-warmup ≈ **6.0%** (threshold: 3 standard deviations)
+- **End-to-end latency (Kafka ingestion → Postgres write):** **p50 ≈ 32ms, p95 ≈ 40ms**, measured using a single clock (timestamped at the moment the producer receives each trade) to avoid clock-skew artifacts from comparing against Binance's own server timestamps
+- **Reconnect resilience:** verified automatic recovery from simulated network drops via exponential backoff (1s–60s, resetting on a successful reconnect)
+
 
 ## Setup
 
