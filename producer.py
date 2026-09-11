@@ -48,6 +48,7 @@ async def stream_trades():
         log.info(f"Connected to Binance stream for {SYMBOL}, publishing to Kafka topic '{TOPIC}'")
         async for message in ws:
             trade = json.loads(message)
+            trade["received_at"] = time.time() * 1000  # our clock time, ms — added for latency measurement
             producer.produce(
                 TOPIC,
                 value=json.dumps(trade).encode('utf-8'),

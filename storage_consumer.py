@@ -74,8 +74,9 @@ try:
         r = json.loads(msg.value().decode("utf-8"))
         trade_time = datetime.fromtimestamp(r["trade_time"] / 1000, tz=timezone.utc)
 
-        # latency = time from the original Binance trade to this write, in milliseconds
-        latency_ms = (datetime.now(timezone.utc) - trade_time).total_seconds() * 1000
+        # latency = time from OUR OWN receipt of the trade to this write — same clock on both ends,
+        # avoids the clock-skew issue from comparing against Binance's server timestamp
+        latency_ms = time.time() * 1000 - r["received_at"]
         latencies_ms.append(latency_ms)
 
         try:

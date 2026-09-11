@@ -111,6 +111,7 @@ try:
             "symbol": trade["s"],
             "trade_id": trade["t"],
             "trade_time": trade["T"],  # Binance sends epoch milliseconds
+            "received_at": trade["received_at"],   
             "price": price,
             "quantity": quantity,
             "price_z": price_z,
