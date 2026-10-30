@@ -1,224 +1,1149 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <title>Crypto Anomaly Dashboard</title>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Market Surveillance</title>
+    <meta name="description" content="Live crypto market surveillance: anomalies, pipeline health and replays of recorded trades.">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
     <style>
+        /* ---- design tokens (see DESIGN.md) ---- */
+        :root {
+            color-scheme: light;
+            --bg: #ffffff; --surface: #f6f6f9; --raised: #ffffff; --border: #dedee5;
+            --text: #101114; --text-2: #5c5f75;
+            --accent: #7132f5; --accent-strong: #5741d8; --accent-subtle: rgba(133, 91, 251, 0.14);
+            --up: #0f7a4a; --down: #c4283d; --warn: #9a5a00;
+            --price: #c4283d; --size: #5741d8; --both: #9a5a00;
+            --shadow: 0 4px 24px rgba(0, 0, 0, 0.08);
+            --grid: rgba(16, 17, 20, 0.06);
+            --font: "IBM Plex Sans", "Helvetica Neue", Helvetica, Arial, sans-serif;
+            --mono: "IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace;
+        }
+        @media (prefers-color-scheme: dark) {
+            :root:not([data-theme="light"]) {
+                color-scheme: dark;
+                --bg: #101114; --surface: #16171c; --raised: #1d1e25; --border: #2a2c36;
+                --text: #ececf1; --text-2: #9a9db0;
+                --accent: #9b7bff; --accent-strong: #b39cff; --accent-subtle: rgba(155, 123, 255, 0.18);
+                --up: #3ccf8e; --down: #ff6b7d; --warn: #f2b14a;
+                --price: #ff6b7d; --size: #b39cff; --both: #f2b14a;
+                --shadow: 0 4px 24px rgba(0, 0, 0, 0.5);
+                --grid: rgba(236, 236, 241, 0.06);
+            }
+        }
+        :root[data-theme="dark"] {
+            color-scheme: dark;
+            --bg: #101114; --surface: #16171c; --raised: #1d1e25; --border: #2a2c36;
+            --text: #ececf1; --text-2: #9a9db0;
+            --accent: #9b7bff; --accent-strong: #b39cff; --accent-subtle: rgba(155, 123, 255, 0.18);
+            --up: #3ccf8e; --down: #ff6b7d; --warn: #f2b14a;
+            --price: #ff6b7d; --size: #b39cff; --both: #f2b14a;
+            --shadow: 0 4px 24px rgba(0, 0, 0, 0.5);
+            --grid: rgba(236, 236, 241, 0.06);
+        }
+
+        /* ---- base ---- */
         * { box-sizing: border-box; }
+        html { -webkit-text-size-adjust: 100%; }
         body {
-            font-family: -apple-system, sans-serif;
-            background: #0d1117; color: #e6e6e6;
-            padding: 24px; margin: 0;
+            margin: 0; background: var(--bg); color: var(--text);
+            font: 400 0.875rem/1.45 var(--font);
+            -webkit-font-smoothing: antialiased;
         }
-        h1 { display: flex; align-items: center; gap: 10px; font-size: 22px; }
+        ::selection { background: var(--accent-subtle); color: var(--text); }
+        :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 6px; }
+        a { color: var(--accent); text-underline-offset: 3px; }
+        a:hover { color: var(--accent-strong); }
+        h1, h2, h3 { margin: 0; font-weight: 600; letter-spacing: -0.01em; text-wrap: balance; }
+        h1 { font-size: 1.25rem; }
+        h2 { font-size: 1rem; }
+        h3 { font-size: 0.875rem; }
+        .num, .mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+        .muted { color: var(--text-2); }
+        .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+        * { scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
+        svg.icon { width: 16px; height: 16px; flex: none; stroke: currentColor; fill: none; stroke-width: 2;
+                   stroke-linecap: round; stroke-linejoin: round; }
 
-        .live-dot {
-            width: 10px; height: 10px; border-radius: 50%;
-            background: #3fb950;
-            animation: pulse 1.5s infinite;
+        /* ---- controls ---- */
+        button, select, input { font: inherit; color: inherit; }
+        .btn {
+            display: inline-flex; align-items: center; gap: 6px; min-height: 36px; padding: 0 14px;
+            border-radius: 12px; border: 1px solid var(--border); background: var(--raised); color: var(--text);
+            font-weight: 500; cursor: pointer; transition: background-color 150ms ease-out, border-color 150ms ease-out;
         }
-        @keyframes pulse {
-            0%   { box-shadow: 0 0 0 0 rgba(63, 185, 80, 0.6); }
-            70%  { box-shadow: 0 0 0 8px rgba(63, 185, 80, 0); }
-            100% { box-shadow: 0 0 0 0 rgba(63, 185, 80, 0); }
+        .btn:hover { border-color: var(--text-2); }
+        .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+        .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+        :root[data-theme="dark"] .btn.primary { color: #101114; }
+        @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .btn.primary { color: #101114; } }
+        .btn.primary:hover { background: var(--accent-strong); border-color: var(--accent-strong); }
+        .btn.subtle { background: var(--accent-subtle); border-color: transparent; color: var(--accent); }
+        .btn.icon-only { padding: 0; width: 36px; justify-content: center; }
+        .segmented { display: inline-flex; padding: 3px; gap: 2px; border-radius: 12px; background: var(--surface);
+                     border: 1px solid var(--border); }
+        .segmented button { min-height: 30px; padding: 0 12px; border: 0; border-radius: 9px; background: none;
+                            color: var(--text-2); font-weight: 500; cursor: pointer; }
+        .segmented button[aria-pressed="true"] { background: var(--raised); color: var(--text); box-shadow: 0 1px 4px rgba(16, 24, 40, 0.08); }
+        .segmented button:hover:not([aria-pressed="true"]) { color: var(--text); }
+        select, input[type="datetime-local"] {
+            min-height: 36px; padding: 0 10px; border-radius: 12px; border: 1px solid var(--border);
+            background: var(--raised);
         }
-        .live-dot.stale { background: #f85149; animation: none; }
+        label.field { display: grid; gap: 4px; font-size: 0.75rem; color: var(--text-2); font-weight: 500; }
+        label.field select, label.field input { color: var(--text); font-size: 0.875rem; }
 
-        .stats-row {
-            display: grid;
-            grid-template-columns: repeat(4, 1fr);
-            gap: 14px;
-            margin: 20px 0;
+        /* ---- layout ---- */
+        .wrap { max-width: 1440px; margin: 0 auto; padding: 0 24px 48px; }
+        .topbar {
+            display: flex; flex-wrap: wrap; align-items: center; gap: 12px 16px; padding: 16px 0;
+            border-bottom: 1px solid var(--border);
         }
-        .stat-card {
-            background: #161b22; border: 1px solid #30363d;
-            border-radius: 8px; padding: 16px;
-        }
-        .stat-label { font-size: 12px; color: #8b949e; text-transform: uppercase; letter-spacing: 0.05em; }
-        .stat-value { font-size: 26px; font-weight: 600; margin-top: 6px; }
-        .stat-value.up   { color: #3fb950; }
-        .stat-value.down { color: #f85149; }
-
-        #flash-banner {
-            display: none;
-            background: #3d1418; border: 1px solid #f85149; color: #ffb3ab;
-            padding: 12px 16px; border-radius: 8px; margin-bottom: 16px;
-            font-weight: 600;
-        }
-        #flash-banner.show { display: block; animation: flashIn 0.3s ease-out; }
-        @keyframes flashIn {
-            from { opacity: 0; transform: translateY(-8px); }
-            to   { opacity: 1; transform: translateY(0); }
+        .brand { display: flex; align-items: center; gap: 10px; margin-right: auto; }
+        .topbar .tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+        .live-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--text-2); flex: none; }
+        .live-dot[data-state="live"] { background: var(--up); }
+        .live-dot[data-state="replay"] { background: var(--accent); }
+        .live-dot[data-state="offline"] { background: var(--down); }
+        @media (prefers-reduced-motion: no-preference) {
+            .live-dot[data-state="live"] { animation: pulse 1.6s ease-out infinite; }
+            @keyframes pulse {
+                0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--up) 55%, transparent); }
+                80%, 100% { box-shadow: 0 0 0 8px transparent; }
+            }
         }
 
-        canvas { background: #161b22; border-radius: 8px; padding: 10px; }
-        h2 { font-size: 15px; color: #8b949e; margin-top: 28px; }
-        .anomaly-row {
-            font-family: monospace; font-size: 13px; color: #ffb3ab;
-            padding: 6px 0; border-bottom: 1px solid #21262d;
+        .banner {
+            display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; margin-top: 16px; padding: 12px 16px;
+            border-radius: 12px; border: 1px solid var(--border); background: var(--surface);
+        }
+        .banner[hidden] { display: none; }
+        .banner.replay { border-color: var(--accent); background: var(--accent-subtle); }
+        .banner.offline, .banner.error { border-color: color-mix(in srgb, var(--down) 45%, var(--border)); }
+        .banner p { margin: 0; flex: 1 1 320px; }
+        .banner strong { font-weight: 600; }
+
+        .replay-bar { display: flex; flex-wrap: wrap; align-items: end; gap: 12px 16px; margin-top: 16px; }
+        .replay-bar[hidden] { display: none; }
+        .replay-bar .field { min-width: 0; }
+        .replay-bar select#replay-file { max-width: 100%; width: 340px; }
+        .progress { display: grid; gap: 4px; flex: 1 1 220px; min-width: 200px; }
+        .progress-track { height: 6px; border-radius: 3px; background: var(--surface); border: 1px solid var(--border); overflow: hidden; }
+        .progress-fill { height: 100%; width: 0; background: var(--accent); transition: width 200ms ease-out; }
+
+        /* health strip: one row of measures against their targets */
+        .strip {
+            display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); margin-top: 16px;
+            border: 1px solid var(--border); border-radius: 12px; background: var(--surface);
+        }
+        .measure { padding: 12px 16px; min-width: 0; }
+        .strip-note { margin: 16px 0 -8px; font-size: 0.75rem; }
+        .strip-note[hidden] { display: none; }
+        .measure + .measure { border-left: 1px solid var(--border); }
+        .measure dt { font-size: 0.75rem; color: var(--text-2); font-weight: 500; }
+        .measure dd { margin: 2px 0 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; }
+        .measure .value { font-family: var(--mono); font-variant-numeric: tabular-nums; font-size: 1.125rem; font-weight: 500; }
+        .measure .target { font-size: 0.75rem; color: var(--text-2); }
+        .state { display: inline-flex; align-items: center; gap: 5px; font-size: 0.75rem; font-weight: 600; }
+        .state::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+        .state.ok { color: var(--up); }
+        .state.breach { color: var(--down); }
+        .state.unknown { color: var(--warn); }
+
+        .main { display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 16px; margin-top: 16px; }
+        .panel { border: 1px solid var(--border); border-radius: 12px; background: var(--bg); min-width: 0; }
+        .panel-head { display: flex; align-items: center; gap: 8px 12px; flex-wrap: wrap; padding: 12px 16px;
+                      border-bottom: 1px solid var(--border); }
+        .panel-head .spacer { margin-left: auto; }
+        .chart-box { position: relative; height: 380px; padding: 12px 12px 4px; }
+        .legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 0.75rem; color: var(--text-2); }
+        .legend span { display: inline-flex; align-items: center; gap: 5px; }
+        .shape { width: 12px; height: 12px; flex: none; }
+        .overlay {
+            position: absolute; inset: 12px; display: grid; place-content: center; justify-items: center; gap: 10px;
+            text-align: center; padding: 24px; background: var(--bg);
+        }
+        .overlay[hidden] { display: none; }
+        .overlay p { margin: 0; max-width: 46ch; color: var(--text-2); }
+
+        /* anomaly feed */
+        .feed { list-style: none; margin: 0; padding: 4px; max-height: 452px; overflow-y: auto; }
+        .feed-item {
+            width: 100%; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 2px 10px; align-items: center;
+            padding: 10px 12px; border: 0; border-radius: 10px; background: none; text-align: left; cursor: pointer;
+        }
+        .feed-item:hover { background: var(--surface); }
+        .feed-item[aria-current="true"] { background: var(--accent-subtle); }
+        .feed-item .what { display: flex; flex-wrap: wrap; gap: 0 8px; font-weight: 600; }
+        .feed-item .what .num { font-weight: 500; }
+        .feed-item .when { font-size: 0.75rem; color: var(--text-2); }
+        .feed-item .why { grid-column: 2 / 4; font-size: 0.75rem; color: var(--text-2); }
+        @media (prefers-reduced-motion: no-preference) {
+            .feed-item.arrived { animation: arrive 900ms ease-out; }
+            @keyframes arrive { from { background: var(--accent-subtle); } to { background: transparent; } }
+        }
+        .empty { padding: 24px 16px; color: var(--text-2); }
+        .empty strong { display: block; color: var(--text); margin-bottom: 4px; }
+
+        .badge { display: inline-flex; align-items: center; gap: 5px; padding: 2px 8px; border-radius: 8px;
+                 font-size: 0.75rem; font-weight: 600; white-space: nowrap; }
+        .badge.price { color: var(--price); background: color-mix(in srgb, var(--price) 12%, transparent); }
+        .badge.volume { color: var(--size); background: color-mix(in srgb, var(--size) 14%, transparent); }
+        .badge.both { color: var(--both); background: color-mix(in srgb, var(--both) 14%, transparent); }
+
+        /* skeletons */
+        .skeleton { border-radius: 6px; background: linear-gradient(90deg, var(--surface), var(--border), var(--surface));
+                    background-size: 200% 100%; height: 14px; }
+        @media (prefers-reduced-motion: no-preference) {
+            .skeleton { animation: shimmer 1.4s linear infinite; }
+            @keyframes shimmer { to { background-position: -200% 0; } }
+        }
+
+        /* tabs */
+        .tabs { margin-top: 16px; }
+        [role="tablist"] { display: flex; gap: 4px; padding: 8px 12px 0; border-bottom: 1px solid var(--border); overflow-x: auto; }
+        [role="tab"] { min-height: 40px; padding: 0 12px; border: 0; border-bottom: 2px solid transparent; background: none;
+                       color: var(--text-2); font-weight: 500; cursor: pointer; white-space: nowrap; }
+        [role="tab"][aria-selected="true"] { color: var(--text); border-bottom-color: var(--accent); }
+        [role="tab"]:hover { color: var(--text); }
+        [role="tabpanel"] { padding: 16px; }
+        .filters { display: flex; flex-wrap: wrap; align-items: end; gap: 12px; margin-bottom: 16px; }
+        .filters .actions { display: flex; gap: 8px; }
+        .table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 12px; }
+        table { width: 100%; border-collapse: collapse; font-size: 0.8125rem; }
+        th { text-align: left; font-weight: 500; font-size: 0.75rem; color: var(--text-2); background: var(--surface);
+             padding: 8px 12px; white-space: nowrap; position: sticky; top: 0; }
+        td { padding: 8px 12px; border-top: 1px solid var(--border); white-space: nowrap; }
+        td.num, th.num { text-align: right; }
+        tbody tr.clickable { cursor: pointer; }
+        tbody tr.clickable:hover { background: var(--surface); }
+        tbody tr.clickable:focus-visible { outline-offset: -2px; }
+        .table-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-top: 12px; }
+        .health-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; }
+        .health-grid section { min-width: 0; }
+        .health-grid td:first-child { white-space: normal; min-width: 9rem; }
+        .health-grid h3 { margin-bottom: 8px; }
+        .note { margin: 16px 0 0; color: var(--text-2); max-width: 75ch; }
+
+        /* drawer: non-modal side panel */
+        .drawer {
+            position: fixed; top: 0; right: 0; bottom: 0; width: min(440px, 100vw); z-index: 20; overflow-y: auto;
+            background: var(--surface); border-left: 1px solid var(--border); box-shadow: var(--shadow);
+            transform: translateX(100%); visibility: hidden; transition: transform 200ms ease-out, visibility 0s linear 200ms;
+        }
+        .drawer.open { transform: none; visibility: visible; transition: transform 200ms ease-out; }
+        @media (prefers-reduced-motion: reduce) { .drawer, .drawer.open { transition: none; } }
+        .drawer-head { position: sticky; top: 0; z-index: 1; display: flex; align-items: flex-start; gap: 12px; padding: 16px;
+                       background: var(--surface); border-bottom: 1px solid var(--border); }
+        .drawer-head > div { flex: 1; min-width: 0; }
+        .drawer-body { padding: 16px; display: grid; gap: 20px; }
+        .facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 0; }
+        .facts dt { font-size: 0.75rem; color: var(--text-2); }
+        .facts dd { margin: 2px 0 0; font-family: var(--mono); font-variant-numeric: tabular-nums; font-size: 0.9375rem; }
+        .reasons { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+        .reasons li { display: grid; grid-template-columns: auto 1fr; gap: 8px; align-items: start; }
+        .reasons li .icon { margin-top: 2px; }
+        .reasons li.hit .icon { color: var(--down); }
+        .reasons li.miss .icon { color: var(--text-2); }
+        .mini { position: relative; height: 180px; background: var(--bg); border: 1px solid var(--border); border-radius: 12px; padding: 8px; }
+
+        /* ---- responsive ---- */
+        @media (max-width: 1024px) {
+            .strip { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+            .measure:nth-child(4) { border-left: 0; }
+            .measure:nth-child(n + 4) { border-top: 1px solid var(--border); }
+        }
+        @media (max-width: 768px) {
+            .wrap { padding: 0 16px 40px; }
+            .main { grid-template-columns: minmax(0, 1fr); }
+            .chart-box { height: 300px; }
+            .feed { max-height: 360px; }
+            .drawer { top: auto; height: 88vh; width: 100vw; border-left: 0; border-top: 1px solid var(--border);
+                      border-radius: 16px 16px 0 0; transform: translateY(100%); }
+        }
+        @media (max-width: 480px) {
+            .strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+            .measure { border-left: 0 !important; }
+            .measure:nth-child(n + 3) { border-top: 1px solid var(--border); }
+            .measure:nth-child(even) { border-left: 1px solid var(--border) !important; }
+            .brand h1 { font-size: 1.0625rem; }
+            .replay-bar select#replay-file { width: 100%; }
+            .replay-bar .field { flex: 1 1 100%; }
+            .chart-box { height: 260px; }
         }
     </style>
 </head>
 <body>
-    <h1><span class="live-dot" id="live-dot"></span> BTC/USDT — Live Trade Stream</h1>
+    <!-- icons: drawn as one consistent 2px-stroke set -->
+    <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+        <symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></symbol>
+        <symbol id="i-play" viewBox="0 0 24 24"><path d="M7 5l12 7-12 7z"/></symbol>
+        <symbol id="i-stop" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1.5"/></symbol>
+        <symbol id="i-bell" viewBox="0 0 24 24"><path d="M6 16V11a6 6 0 0 1 12 0v5l1.5 2h-15zM10 20.5a2.2 2.2 0 0 0 4 0"/></symbol>
+        <symbol id="i-bell-off" viewBox="0 0 24 24"><path d="M6 16V11a6 6 0 0 1 9.4-4.9M18 11v5l1.5 2H9M10 20.5a2.2 2.2 0 0 0 4 0M4 4l16 16"/></symbol>
+        <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.3 5.3l1.4 1.4M17.3 17.3l1.4 1.4M5.3 18.7l1.4-1.4M17.3 6.7l1.4-1.4"/></symbol>
+        <symbol id="i-moon" viewBox="0 0 24 24"><path d="M19.5 14.5A8 8 0 0 1 9.5 4.5a8 8 0 1 0 10 10z"/></symbol>
+        <symbol id="i-flag" viewBox="0 0 24 24"><path d="M5 21V4h11l-2 4 2 4H5"/></symbol>
+        <symbol id="i-dash" viewBox="0 0 24 24"><path d="M6 12h12"/></symbol>
+        <symbol id="i-retry" viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.3-5.7M20 4v5h-5"/></symbol>
+    </svg>
 
-    <div id="flash-banner"></div>
+    <div class="wrap">
+        <header class="topbar">
+            <div class="brand">
+                <span class="live-dot" id="live-dot" data-state="connecting" aria-hidden="true"></span>
+                <h1>Market surveillance</h1>
+                <span class="muted" id="mode-label">Connecting…</span>
+            </div>
+            <div class="tools">
+                <div class="segmented" role="group" aria-label="Data source">
+                    <button type="button" id="mode-live" aria-pressed="true">Live</button>
+                    <button type="button" id="mode-replay" aria-pressed="false">Replay</button>
+                </div>
+                <label class="sr-only" for="symbol">Symbol shown on the chart</label>
+                <select id="symbol"></select>
+                <button type="button" class="btn icon-only" id="alerts-btn" aria-pressed="false"
+                        title="Browser alerts for new anomalies">
+                    <svg class="icon"><use href="#i-bell-off"/></svg><span class="sr-only">Browser alerts</span>
+                </button>
+                <button type="button" class="btn icon-only" id="theme-btn" title="Switch light or dark">
+                    <svg class="icon"><use href="#i-moon"/></svg><span class="sr-only">Switch light or dark theme</span>
+                </button>
+            </div>
+        </header>
 
-    <div class="stats-row">
-        <div class="stat-card">
-            <div class="stat-label">Current Price</div>
-            <div class="stat-value" id="stat-price">—</div>
+        <div class="replay-bar" id="replay-bar" hidden>
+            <label class="field">Recorded trades
+                <select id="replay-file"></select>
+            </label>
+            <div class="field" role="group" aria-labelledby="speed-label">
+                <span id="speed-label">Speed</span>
+                <div class="segmented" id="speed">
+                    <button type="button" data-speed="10" aria-pressed="false">10×</button>
+                    <button type="button" data-speed="100" aria-pressed="true">100×</button>
+                    <button type="button" data-speed="1000" aria-pressed="false">1000×</button>
+                </div>
+            </div>
+            <button type="button" class="btn primary" id="replay-start">
+                <svg class="icon"><use href="#i-play"/></svg><span>Start replay</span>
+            </button>
+            <div class="progress" aria-live="off">
+                <span class="muted" id="replay-status">Pick a recording and a speed.</span>
+                <div class="progress-track" role="progressbar" aria-label="Replay progress" aria-valuemin="0"
+                     aria-valuemax="100" aria-valuenow="0" id="replay-progress"><div class="progress-fill" id="replay-fill"></div></div>
+            </div>
         </div>
-        <div class="stat-card">
-            <div class="stat-label">Recent Volume (30 trades)</div>
-            <div class="stat-value" id="stat-volume">—</div>
+
+        <div class="banner" id="banner" role="status" hidden></div>
+
+        <p class="muted strip-note" id="strip-note" hidden>Live pipeline health, shown while you replay. The replay itself isn't counted here.</p>
+        <dl class="strip" aria-label="Live pipeline health against its targets" id="strip">
+            <div class="measure"><dt>Trades / second</dt><dd><span class="value" id="m-rate">—</span><span class="target">last minute</span></dd></div>
+            <div class="measure"><dt>Latency p95</dt><dd><span class="value" id="m-latency">—</span><span class="state unknown" id="s-latency">Unknown</span></dd></div>
+            <div class="measure"><dt>Completeness (24 h)</dt><dd><span class="value" id="m-complete">—</span><span class="state unknown" id="s-complete">Unknown</span></dd></div>
+            <div class="measure"><dt>Consumer lag</dt><dd><span class="value" id="m-lag">—</span><span class="state unknown" id="s-lag">Unknown</span></dd></div>
+            <div class="measure"><dt>Newest trade</dt><dd><span class="value" id="m-fresh">—</span><span class="target" id="m-fresh-symbol"></span></dd></div>
+        </dl>
+
+        <div class="main">
+            <section class="panel" aria-labelledby="chart-title">
+                <div class="panel-head">
+                    <h2 id="chart-title">Price</h2>
+                    <span class="num" id="last-price"></span>
+                    <div class="legend spacer" aria-label="Chart markers">
+                        <span><svg class="shape" viewBox="0 0 12 12" style="color:var(--price)"><path d="M6 1l5 9H1z" fill="currentColor"/></svg>Price</span>
+                        <span><svg class="shape" viewBox="0 0 12 12" style="color:var(--size)"><path d="M6 0.5l5.5 5.5L6 11.5 0.5 6z" fill="currentColor"/></svg>Size</span>
+                        <span><svg class="shape" viewBox="0 0 12 12" style="color:var(--both)"><path d="M6 0.8l1.6 3.4 3.7.4-2.8 2.5.8 3.7L6 9 2.7 10.8l.8-3.7L.7 4.6l3.7-.4z" fill="currentColor"/></svg>Both</span>
+                    </div>
+                </div>
+                <div class="chart-box">
+                    <canvas id="price-chart" role="img" aria-label="Price of the selected symbol over its most recent trades, with anomaly markers"></canvas>
+                    <div class="overlay" id="chart-overlay">
+                        <div class="skeleton" style="width:240px"></div>
+                        <div class="skeleton" style="width:180px"></div>
+                    </div>
+                </div>
+            </section>
+
+            <section class="panel" aria-labelledby="feed-title">
+                <div class="panel-head">
+                    <h2 id="feed-title">Anomalies</h2>
+                    <span class="muted spacer" id="feed-count"></span>
+                </div>
+                <ul class="feed" id="feed" aria-describedby="feed-title">
+                    <li class="empty"><div class="skeleton" style="width:80%"></div></li>
+                    <li class="empty"><div class="skeleton" style="width:60%"></div></li>
+                </ul>
+            </section>
         </div>
-        <div class="stat-card">
-            <div class="stat-label">Anomalies Detected</div>
-            <div class="stat-value" id="stat-anomalies">—</div>
-        </div>
-        <div class="stat-card">
-            <div class="stat-label">Last Update</div>
-            <div class="stat-value" id="stat-updated" style="font-size:16px;">—</div>
-        </div>
+
+        <section class="panel tabs">
+            <div role="tablist" aria-label="Details">
+                <button type="button" role="tab" id="tab-history" aria-controls="panel-history" aria-selected="true">Anomaly history</button>
+                <button type="button" role="tab" id="tab-health" aria-controls="panel-health" aria-selected="false" tabindex="-1">Pipeline health</button>
+            </div>
+
+            <div role="tabpanel" id="panel-history" aria-labelledby="tab-history">
+                <form class="filters" id="history-form">
+                    <label class="field">Symbol <select name="symbol" id="h-symbol"><option value="">All symbols</option></select></label>
+                    <label class="field">Type
+                        <select name="type">
+                            <option value="">All types</option>
+                            <option value="price">Price</option>
+                            <option value="volume">Size</option>
+                            <option value="both">Price + size</option>
+                        </select>
+                    </label>
+                    <label class="field">From <input type="datetime-local" name="start"></label>
+                    <label class="field">To <input type="datetime-local" name="end"></label>
+                    <div class="actions">
+                        <button type="submit" class="btn primary">Apply filters</button>
+                        <button type="reset" class="btn">Clear</button>
+                    </div>
+                </form>
+                <div id="history"></div>
+            </div>
+
+            <div role="tabpanel" id="panel-health" aria-labelledby="tab-health" hidden>
+                <div id="health-view"></div>
+                <p class="note">Charts over time live in Grafana (<a href="http://localhost:3000" target="_blank" rel="noopener">localhost:3000</a>),
+                    traces in Jaeger (<a href="http://localhost:16686" target="_blank" rel="noopener">localhost:16686</a>), when started with
+                    <code>docker compose --profile observability up -d</code>.</p>
+            </div>
+        </section>
     </div>
 
-    <canvas id="priceChart" height="90"></canvas>
+    <aside class="drawer" id="drawer" aria-labelledby="drawer-title" tabindex="-1">
+        <div class="drawer-head">
+            <div>
+                <h2 id="drawer-title">Trade</h2>
+                <div class="muted" id="drawer-sub"></div>
+            </div>
+            <button type="button" class="btn icon-only" id="drawer-close">
+                <svg class="icon"><use href="#i-x"/></svg><span class="sr-only">Close details</span>
+            </button>
+        </div>
+        <div class="drawer-body" id="drawer-body"></div>
+    </aside>
 
-    <h2>RECENT ANOMALIES</h2>
-    <div id="anomaly-list">Loading...</div>
+    <div class="sr-only" aria-live="polite" id="announcer"></div>
 
     <script>
-        const ctx = document.getElementById('priceChart').getContext('2d');
-        let lastSeenAnomalyId = null; // tracks the newest anomaly we've already flashed for
+    // ------------------------------------------------------------------ helpers
+    const $ = (id) => document.getElementById(id);
+    const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+    const store = {
+        get(key) { try { return localStorage.getItem(key); } catch { return null; } },
+        set(key, value) { try { localStorage.setItem(key, value); } catch { /* private mode */ } },
+    };
+    const TYPE = {
+        price: { label: 'Price', color: '--price', point: 'triangle' },
+        volume: { label: 'Size', color: '--size', point: 'rectRot' },
+        both: { label: 'Price + size', color: '--both', point: 'star' },
+    };
+    const MAX_POINTS = 300;
 
-        const chart = new Chart(ctx, {
-            type: 'line',
-            data: {
-                labels: [],
-                datasets: [{
-                    label: 'Price (USDT)',
-                    data: [],
-                    borderColor: '#4ea8ff',
-                    segment: {
-                        // color each line SEGMENT based on whether price rose or fell
-                        borderColor: ctx => {
-                            const { p0, p1 } = ctx;
-                            if (!p0 || !p1) return '#4ea8ff';
-                            return p1.parsed.y >= p0.parsed.y ? '#3fb950' : '#f85149';
-                        }
+    function fmtPrice(p) {
+        const n = Number(p);
+        if (!Number.isFinite(n)) return '—';
+        const digits = n < 10 ? 4 : 2;
+        return n.toLocaleString(undefined, { minimumFractionDigits: digits, maximumFractionDigits: digits });
+    }
+    // axis labels: whole dollars for large prices, so they stay short
+    const fmtAxis = (v) => Math.abs(v) >= 1000 ? Math.round(v).toLocaleString() : fmtPrice(v);
+    const fmtNum = (n, d = 2) => (n == null || !Number.isFinite(Number(n))) ? '—' : Number(n).toFixed(d);
+    const fmtTime = (t) => new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    const fmtDateTime = (t) => new Date(t).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    function fmtAge(seconds) {
+        if (seconds == null) return '—';
+        if (seconds < 60) return `${Math.round(seconds)} s`;
+        if (seconds < 3600) return `${Math.round(seconds / 60)} min`;
+        if (seconds < 86400) return `${(seconds / 3600).toFixed(1)} h`;
+        return `${(seconds / 86400).toFixed(1)} d`;
+    }
+    function badge(type) {
+        const t = TYPE[type];
+        return t ? `<span class="badge ${type}">${t.label}</span>` : '';
+    }
+    function scoreSummary(r) {
+        const bits = [];
+        if (r.price_z != null) bits.push(`z ${Number(r.price_z) >= 0 ? '+' : ''}${fmtNum(r.price_z, 1)}`);
+        if (r.size_ratio != null) bits.push(`${fmtNum(r.size_ratio, 0)}× median size`);
+        else if (r.volume_z != null) bits.push(`vol z ${fmtNum(r.volume_z, 1)} (v1)`);
+        return bits.join(' · ');
+    }
+    async function getJSON(url) {
+        const res = await fetch(url);
+        if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+        return res.json();
+    }
+    function announce(text) { $('announcer').textContent = text; }
+
+    // ------------------------------------------------------------------ state
+    const state = {
+        mode: 'live',
+        symbol: store.get('symbol') || 'BTCUSDT',
+        rows: [],              // chart points (oldest first)
+        anomalies: [],         // feed (newest first)
+        liveStream: null,
+        replayStream: null,
+        replay: { file: null, speed: 100, files: [] },
+        health: null,
+        historyCursor: null,
+        alerts: store.get('alerts') === 'on' && 'Notification' in window && Notification.permission === 'granted',
+        lastNotified: 0,
+        drawerOpener: null,
+        healthTimer: null,
+    };
+
+    // ------------------------------------------------------------------ theme
+    function applyTheme(theme) {
+        if (theme) document.documentElement.dataset.theme = theme;
+        const dark = css('color-scheme') === 'dark';
+        $('theme-btn').querySelector('use').setAttribute('href', dark ? '#i-sun' : '#i-moon');
+        $('theme-btn').title = dark ? 'Switch to light' : 'Switch to dark';
+        restyleCharts();
+    }
+    $('theme-btn').addEventListener('click', () => {
+        const next = css('color-scheme') === 'dark' ? 'light' : 'dark';
+        store.set('theme', next);
+        applyTheme(next);
+    });
+    if (store.get('theme')) document.documentElement.dataset.theme = store.get('theme');
+
+    // ------------------------------------------------------------------ charts
+    function chartColors() {
+        return { text: css('--text-2'), grid: css('--grid'), line: css('--accent'), up: css('--up'), down: css('--down'),
+                 price: css('--price'), size: css('--size'), both: css('--both'), bg: css('--bg') };
+    }
+    function pointStyles(rows, c) {
+        return {
+            pointStyle: rows.map((r) => r.is_anomaly ? (TYPE[r.anomaly_type]?.point || 'circle') : 'circle'),
+            pointRadius: rows.map((r) => r._focus ? 11 : r.is_anomaly ? 6 : 0),
+            pointHoverRadius: rows.map((r) => r.is_anomaly ? 9 : 4),
+            pointBackgroundColor: rows.map((r) => r.is_anomaly ? c[{ price: 'price', volume: 'size', both: 'both' }[r.anomaly_type] || 'price'] : c.line),
+            pointBorderColor: rows.map(() => c.bg),
+            pointBorderWidth: rows.map((r) => r._focus ? 3 : r.is_anomaly ? 1.5 : 0),
+        };
+    }
+    function baseOptions(c, onClick) {
+        return {
+            animation: false, responsive: true, maintainAspectRatio: false, normalized: true,
+            interaction: { mode: 'nearest', intersect: false },
+            plugins: {
+                legend: { display: false },
+                tooltip: {
+                    callbacks: {
+                        label: (ctx) => {
+                            const r = ctx.dataset.rows?.[ctx.dataIndex];
+                            if (!r) return fmtPrice(ctx.parsed.y);
+                            const extra = r.is_anomaly ? ` · ${TYPE[r.anomaly_type]?.label} anomaly` : '';
+                            return `${fmtPrice(r.price)}${extra}`;
+                        },
                     },
-                    pointBackgroundColor: [],
-                    pointRadius: [],
-                    tension: 0.2,
-                }]
+                },
             },
-            options: {
-                animation: false,
-                plugins: { legend: { display: false } },
-                scales: {
-                    x: { ticks: { color: '#8b949e' }, grid: { color: '#21262d' } },
-                    y: { ticks: { color: '#8b949e' }, grid: { color: '#21262d' } }
-                }
-            }
-        });
+            scales: {
+                x: { ticks: { color: c.text, maxRotation: 0, autoSkip: true, maxTicksLimit: 6, font: { family: 'IBM Plex Mono', size: 11 } },
+                     grid: { display: false } },
+                y: { ticks: { color: c.text, font: { family: 'IBM Plex Mono', size: 11 }, callback: (v) => fmtAxis(v) },
+                     grid: { color: c.grid } },
+            },
+            onClick,
+            onHover: (evt, els) => { evt.native.target.style.cursor = els.some((e) => e.element && evt.chart.data.datasets[0].rows?.[e.index]?.is_anomaly) ? 'pointer' : 'default'; },
+        };
+    }
 
-        // the pipeline can stream several symbols; the chart shows one
-        const SYMBOL = 'BTCUSDT';
+    const priceChart = new Chart($('price-chart'), {
+        type: 'line',
+        data: { labels: [], datasets: [{ data: [], rows: [], borderWidth: 1.5, tension: 0, fill: false, spanGaps: true }] },
+        options: baseOptions(chartColors(), (evt, els) => {
+            const hit = priceChart.getElementsAtEventForMode(evt, 'nearest', { intersect: true }, false)
+                .map((e) => priceChart.data.datasets[0].rows[e.index]).find((r) => r?.is_anomaly);
+            if (hit) openDrawer(hit, $('price-chart'));
+        }),
+    });
+    let miniChart = null;
 
-        // warm-up trades have no scores yet (null), and older rows have volume_z instead of size_ratio
-        function describeScores(a) {
-            const z = a.price_z == null ? '—' : a.price_z.toFixed(2);
-            const size = a.size_ratio != null ? `size=${a.size_ratio.toFixed(1)}x median`
-                       : a.volume_z != null ? `vol_z=${a.volume_z.toFixed(2)}` : 'size=—';
-            return `price_z=${z}, ${size}`;
+    function renderChart() {
+        const c = chartColors();
+        const rows = state.rows;
+        const ds = priceChart.data.datasets[0];
+        priceChart.data.labels = rows.map((r) => fmtTime(r.trade_time));
+        ds.data = rows.map((r) => Number(r.price));
+        ds.rows = rows;
+        ds.borderColor = c.line;
+        Object.assign(ds, pointStyles(rows, c));
+        priceChart.update('none');
+        const last = rows[rows.length - 1];
+        $('last-price').textContent = last ? fmtPrice(last.price) : '';
+        $('chart-title').textContent = `${state.symbol} price`;
+    }
+    function restyleCharts() {
+        const c = chartColors();
+        for (const chart of [priceChart, miniChart]) {
+            if (!chart) continue;
+            const s = chart.options.scales;
+            s.x.ticks.color = s.y.ticks.color = c.text;
+            s.y.grid.color = c.grid;
+            chart.data.datasets[0].borderColor = c.line;
+            Object.assign(chart.data.datasets[0], pointStyles(chart.data.datasets[0].rows || [], c));
+            chart.update('none');
         }
+    }
 
-        function setLiveDot(ok) {
-            document.getElementById('live-dot').classList.toggle('stale', !ok);
+    function showOverlay(html) {
+        const o = $('chart-overlay');
+        if (html == null) { o.hidden = true; return; }
+        o.innerHTML = html;
+        o.hidden = false;
+    }
+
+    // Incoming events are queued and drawn at most 4 times a second. Redrawing on every event
+    // froze the page at 1000x replay (~33 anomalies/s each rebuilding the feed).
+    const pending = { rows: [], anomalies: [], timer: null };
+    function scheduleFlush() {
+        if (!pending.timer) pending.timer = setTimeout(flush, 250);
+    }
+    function flush() {
+        pending.timer = null;
+        if (pending.rows.length) {
+            state.rows.push(...pending.rows);
+            pending.rows = [];
+            if (state.rows.length > MAX_POINTS) state.rows.splice(0, state.rows.length - MAX_POINTS);
+            showOverlay(null);
+            renderChart();
         }
-
-        function flashAnomaly(a) {
-            const banner = document.getElementById('flash-banner');
-            const label = a.anomaly_type === 'both' ? 'PRICE + VOLUME'
-                        : a.anomaly_type === 'price' ? 'PRICE'
-                        : 'VOLUME';
-            banner.textContent =
-                `🚨 ${label} ANOMALY — price=${a.price.toFixed(2)} qty=${a.quantity.toFixed(5)} ` +
-                `(${describeScores(a)})`;
-            banner.classList.add('show');
-            setTimeout(() => banner.classList.remove('show'), 6000);
+        if (pending.anomalies.length) {
+            const fresh = pending.anomalies.reverse();  // newest first
+            pending.anomalies = [];
+            fresh.forEach((r) => { r._new = true; });
+            state.anomalies.unshift(...fresh);
+            if (state.anomalies.length > 100) state.anomalies.length = 100;
+            renderFeed();
+            const first = fresh[0];
+            announce(fresh.length === 1
+                ? `${TYPE[first.anomaly_type]?.label || ''} anomaly on ${first.symbol} at ${fmtPrice(first.price)}`
+                : `${fresh.length} new anomalies`);
+            maybeNotify(first, fresh.length);
         }
+    }
+    function clearPending() {
+        clearTimeout(pending.timer);
+        Object.assign(pending, { rows: [], anomalies: [], timer: null });
+    }
+    function addRows(rows) {
+        if (!rows.length) return;
+        pending.rows.push(...rows);
+        scheduleFlush();
+    }
 
-        async function refreshChart() {
-            const res = await fetch(`/trades?limit=50&symbol=${SYMBOL}`);
-            const trades = (await res.json()).reverse(); // oldest first, chart reads left-to-right
-
-            chart.data.labels = trades.map(t => new Date(t.trade_time).toLocaleTimeString());
-            chart.data.datasets[0].data = trades.map(t => t.price);
-            chart.data.datasets[0].pointBackgroundColor = trades.map(t => t.is_anomaly ? '#ff4444' : '#4ea8ff');
-            chart.data.datasets[0].pointRadius = trades.map(t => t.is_anomaly ? 6 : 2);
-            chart.update();
-
-            if (trades.length > 0) {
-                const latest = trades[trades.length - 1];
-                const prev = trades.length > 1 ? trades[trades.length - 2] : latest;
-                const priceEl = document.getElementById('stat-price');
-                priceEl.textContent = `$${latest.price.toFixed(2)}`;
-                priceEl.className = 'stat-value ' + (latest.price >= prev.price ? 'up' : 'down');
-
-                const totalVolume = trades.reduce((sum, t) => sum + t.quantity, 0);
-                document.getElementById('stat-volume').textContent = totalVolume.toFixed(4);
-
-                document.getElementById('stat-updated').textContent = new Date().toLocaleTimeString();
-            }
+    // ------------------------------------------------------------------ anomaly feed
+    function renderFeed() {
+        const feed = $('feed');
+        const list = state.anomalies;
+        $('feed-count').textContent = list.length ? `${list.length} shown` : '';
+        if (!list.length) {
+            feed.innerHTML = state.mode === 'replay'
+                ? `<li class="empty"><strong>No anomalies in this replay yet</strong>They appear here as the replay reaches them.</li>`
+                : `<li class="empty"><strong>No anomalies yet</strong>A trade is flagged when its price move is more than 6 robust standard deviations from normal, or it is at least 50× the median trade size.</li>`;
+            return;
         }
+        feed.innerHTML = list.map((r, i) => `
+            <li><button type="button" class="feed-item${r._new ? ' arrived' : ''}" data-index="${i}">
+                ${badge(r.anomaly_type)}
+                <span class="what">${esc(r.symbol)} <span class="num">${fmtPrice(r.price)}</span></span>
+                <span class="when num">${fmtTime(r.trade_time)}</span>
+                <span class="why num">${esc(scoreSummary(r))}</span>
+            </button></li>`).join('');
+        list.forEach((r) => { delete r._new; });
+    }
+    $('feed').addEventListener('click', (e) => {
+        const btn = e.target.closest('.feed-item');
+        if (btn) openDrawer(state.anomalies[Number(btn.dataset.index)], btn);
+    });
+    function addAnomaly(row) {
+        pending.anomalies.push(row);
+        scheduleFlush();
+    }
 
-        async function refreshAnomalyList() {
-            const [listRes, countRes] = await Promise.all([
-                fetch(`/anomalies?limit=10&symbol=${SYMBOL}`),
-                fetch(`/anomalies/count?symbol=${SYMBOL}`)
-            ]);
-            const anomalies = await listRes.json();
-            const countData = await countRes.json();
-            const container = document.getElementById('anomaly-list');
-
-            document.getElementById('stat-anomalies').textContent = countData.count;
-
-            if (anomalies.length === 0) {
-                container.innerHTML = '<p style="color:#8b949e;">No anomalies detected yet.</p>';
+    // ------------------------------------------------------------------ browser alerts
+    function renderAlertsButton() {
+        const btn = $('alerts-btn');
+        btn.setAttribute('aria-pressed', String(state.alerts));
+        btn.querySelector('use').setAttribute('href', state.alerts ? '#i-bell' : '#i-bell-off');
+        btn.title = state.alerts ? 'Browser alerts on (click to turn off)' : 'Browser alerts off (click to turn on)';
+        btn.classList.toggle('subtle', state.alerts);
+    }
+    $('alerts-btn').addEventListener('click', async () => {
+        if (!('Notification' in window)) { showBanner('error', '<p>This browser does not support notifications.</p>'); return; }
+        if (!state.alerts && Notification.permission !== 'granted') {
+            const answer = await Notification.requestPermission();
+            if (answer !== 'granted') {
+                showBanner('error', '<p><strong>Alerts are blocked.</strong> Allow notifications for this site in the browser settings, then try again.</p>');
                 return;
             }
-
-            // flash a notification only if the newest anomaly is one we haven't seen yet
-            const newest = anomalies[0];
-            if (newest.trade_id !== lastSeenAnomalyId) {
-                if (lastSeenAnomalyId !== null) flashAnomaly(newest); // skip flash on very first load
-                lastSeenAnomalyId = newest.trade_id;
-            }
-
-            container.innerHTML = anomalies.map(a =>
-                `<div class="anomaly-row">
-                    [${(a.anomaly_type || '').toUpperCase()}]
-                    ${new Date(a.trade_time).toLocaleTimeString()} —
-                    price=${a.price.toFixed(2)} qty=${a.quantity.toFixed(5)}
-                    (${describeScores(a)})
-                </div>`
-            ).join('');
         }
+        state.alerts = !state.alerts;
+        store.set('alerts', state.alerts ? 'on' : 'off');
+        renderAlertsButton();
+    });
+    function maybeNotify(row, count = 1) {
+        if (!state.alerts || !document.hidden) return;   // the page itself shows it when visible
+        if (Date.now() - state.lastNotified < 10000) return; // at most one notification per 10 s
+        state.lastNotified = Date.now();
+        const prefix = state.mode === 'replay' ? 'Replay: ' : '';
+        const more = count > 1 ? ` (+${count - 1} more)` : '';
+        new Notification(`${prefix}${TYPE[row.anomaly_type]?.label} anomaly · ${row.symbol}${more}`, {
+            body: `${fmtPrice(row.price)} · ${scoreSummary(row)}`, tag: 'anomaly',
+        });
+    }
 
-        async function refreshAll() {
-            try {
-                await Promise.all([refreshChart(), refreshAnomalyList()]);
-                setLiveDot(true);
-            } catch (e) {
-                setLiveDot(false); // API unreachable — show red instead of green
-                console.error('Refresh failed:', e);
-            }
+    // ------------------------------------------------------------------ banner
+    function showBanner(kind, html) {
+        const b = $('banner');
+        if (!kind) { b.hidden = true; b.innerHTML = ''; return; }
+        b.className = `banner ${kind}`;
+        b.innerHTML = html;
+        b.hidden = false;
+    }
+    function setStatus(dot, label) {
+        $('live-dot').dataset.state = dot;
+        $('mode-label').textContent = label;
+    }
+
+    // ------------------------------------------------------------------ health
+    function setState(id, kind, text) {
+        const el = $(id);
+        el.className = `state ${kind}`;
+        el.textContent = text;
+    }
+    function renderHealth(h) {
+        state.health = h;
+        $('m-rate').textContent = fmtNum(h.trades_per_second, 2);
+        const p95 = h.latency_ms?.p95;
+        $('m-latency').textContent = p95 == null ? '—' : (p95 >= 1000 ? `${(p95 / 1000).toFixed(1)} s` : `${Math.round(p95)} ms`);
+        if (p95 == null) setState('s-latency', 'unknown', 'No recent trades');
+        else setState('s-latency', p95 / 1000 <= h.slo.latency_p95_seconds ? 'ok' : 'breach', p95 / 1000 <= h.slo.latency_p95_seconds ? 'OK' : 'Breach');
+
+        const worst = [...(h.completeness || [])].sort((a, b) => a.completeness_pct - b.completeness_pct)[0];
+        $('m-complete').textContent = worst ? `${worst.completeness_pct.toFixed(2)}%` : '—';
+        if (!worst) setState('s-complete', 'unknown', 'No data');
+        else setState('s-complete', worst.completeness_pct >= h.slo.completeness_pct ? 'ok' : 'breach',
+            worst.completeness_pct >= h.slo.completeness_pct ? 'OK' : `Breach · ${worst.symbol}`);
+
+        const lag = (h.consumer_lag || []).reduce((m, l) => Math.max(m, l.messages), 0);
+        $('m-lag').textContent = h.consumer_lag_error ? '—' : lag.toLocaleString();
+        if (h.consumer_lag_error) setState('s-lag', 'unknown', 'Kafka unreachable');
+        else setState('s-lag', lag < h.slo.consumer_lag ? 'ok' : 'breach', lag < h.slo.consumer_lag ? 'OK' : 'Breach');
+
+        const age = h.seconds_since_last_trade?.[state.symbol];
+        $('m-fresh').textContent = fmtAge(age);
+        $('m-fresh-symbol').textContent = age == null ? '' : `ago · ${state.symbol}`;
+
+        renderHealthView(h);
+        if (state.mode === 'live') checkOffline(h);
+    }
+    function renderHealthView(h) {
+        const slo = h.slo;
+        const symbols = Object.keys({ ...h.seconds_since_last_trade, ...h.trades_per_second_by_symbol })
+            .concat((h.completeness || []).map((c) => c.symbol));
+        const unique = [...new Set(symbols)].sort();
+        const comp = Object.fromEntries((h.completeness || []).map((c) => [c.symbol, c]));
+        const p95 = h.latency_ms?.p95;
+        const lagTotal = (h.consumer_lag || []).reduce((m, l) => Math.max(m, l.messages), 0);
+        const row = (name, current, target, ok) => `<tr><td>${name}</td><td class="num">${current}</td><td class="num">${target}</td>
+            <td>${ok == null ? '<span class="state unknown">Unknown</span>' : ok ? '<span class="state ok">OK</span>' : '<span class="state breach">Breach</span>'}</td></tr>`;
+        $('health-view').innerHTML = `
+            <p class="muted" style="margin:0 0 16px">Overall: ${h.status === 'ok' ? '<span class="state ok">Healthy</span>' : '<span class="state breach">Degraded</span>'}
+               · checked ${fmtTime(h.checked_at)}${h.breaches?.length ? ` · ${esc(h.breaches.join('; '))}` : ''}</p>
+            <div class="health-grid">
+                <section><h3>Service levels</h3><div class="table-wrap"><table>
+                    <thead><tr><th>Measure</th><th class="num">Now</th><th class="num">Target</th><th>Status</th></tr></thead><tbody>
+                    ${row('Latency p95 (5 min)', p95 == null ? '—' : `${Math.round(p95)} ms`, `≤ ${slo.latency_p95_seconds} s`, p95 == null ? null : p95 / 1000 <= slo.latency_p95_seconds)}
+                    ${row('Completeness, worst symbol (24 h)', (h.completeness || []).length ? `${Math.min(...h.completeness.map((c) => c.completeness_pct)).toFixed(2)}%` : '—', `≥ ${slo.completeness_pct}%`, (h.completeness || []).length ? Math.min(...h.completeness.map((c) => c.completeness_pct)) >= slo.completeness_pct : null)}
+                    ${row('Consumer lag, worst group', h.consumer_lag_error ? '—' : lagTotal.toLocaleString(), `< ${slo.consumer_lag.toLocaleString()}`, h.consumer_lag_error ? null : lagTotal < slo.consumer_lag)}
+                    </tbody></table></div></section>
+                <section><h3>Per symbol</h3>${unique.length ? `<div class="table-wrap"><table>
+                    <thead><tr><th>Symbol</th><th class="num">Trades/s</th><th class="num">Complete</th><th class="num">Missing</th><th class="num">Newest</th></tr></thead><tbody>
+                    ${unique.map((s) => `<tr><td>${esc(s)}</td><td class="num">${fmtNum(h.trades_per_second_by_symbol?.[s] || 0, 2)}</td>
+                        <td class="num">${comp[s] ? comp[s].completeness_pct.toFixed(2) + '%' : '—'}</td>
+                        <td class="num">${comp[s] ? (comp[s].expected - comp[s].stored).toLocaleString() : '—'}</td>
+                        <td class="num">${fmtAge(h.seconds_since_last_trade?.[s])}</td></tr>`).join('')}
+                    </tbody></table></div>` : '<p class="empty">No trades stored yet.</p>'}</section>
+                <section><h3>Consumer groups</h3>${h.consumer_lag_error
+                    ? `<p class="muted">Kafka is unreachable, so lag can't be measured: ${esc(h.consumer_lag_error)}</p>`
+                    : `<div class="table-wrap"><table><thead><tr><th>Group</th><th>Topic</th><th class="num">Behind</th></tr></thead><tbody>
+                       ${(h.consumer_lag || []).map((l) => `<tr><td>${esc(l.group)}</td><td>${esc(l.topic)}</td><td class="num">${l.messages.toLocaleString()}</td></tr>`).join('')
+                         || '<tr><td colspan="3" class="muted">No consumer groups found.</td></tr>'}</tbody></table></div>`}</section>
+            </div>`;
+    }
+    async function pollHealth() {
+        try { renderHealth(await getJSON('/health/pipeline')); } catch { /* the stream banner covers API errors */ }
+    }
+
+    // Offline: no trades in the last minute and the newest one is old. Offer a replay instead of an empty screen.
+    function checkOffline(h) {
+        const ages = Object.values(h.seconds_since_last_trade || {});
+        const newest = ages.length ? Math.min(...ages) : null;
+        if (h.trades_per_second > 0 || (newest != null && newest < 120)) {
+            if ($('banner').classList.contains('offline')) showBanner(null);
+            setStatus('live', 'Live');
+            return;
         }
+        setStatus('offline', 'Live feed offline');
+        showBanner('offline', `<p><strong>The live feed is offline.</strong> ${newest == null ? 'No trades have been stored yet.' : `The newest stored trade is ${fmtAge(newest)} old.`}
+            Watch the detector work on recorded real trades instead.</p>
+            <button type="button" class="btn primary" id="offline-replay"><svg class="icon"><use href="#i-play"/></svg>Replay the 10 Oct 2025 crash at 100×</button>`);
+        $('offline-replay').addEventListener('click', () => { setMode('replay'); startReplay(); });
+    }
 
-        refreshAll();
-        setInterval(refreshAll, 3000);
+    // ------------------------------------------------------------------ live mode
+    async function startLive() {
+        stopLive();
+        clearPending();
+        state.rows = [];
+        showOverlay('<div class="skeleton" style="width:240px"></div><div class="skeleton" style="width:180px"></div>');
+        try {
+            const [trades, anomalies] = await Promise.all([
+                getJSON(`/trades?limit=${MAX_POINTS}&symbol=${encodeURIComponent(state.symbol)}`),
+                getJSON('/anomalies?limit=30'),
+            ]);
+            state.rows = trades.reverse();
+            state.anomalies = anomalies;
+            renderFeed();
+            if (state.rows.length) { showOverlay(null); renderChart(); }
+            else { renderChart(); showOverlay(`<p><strong>No ${esc(state.symbol)} trades stored yet.</strong></p><p>Start <code>producer.py</code>, <code>anomaly_detector.py</code> and <code>storage_consumer.py</code>, or switch to Replay.</p>`); }
+            if (!$('banner').classList.contains('offline')) showBanner(null);
+        } catch (err) {
+            showOverlay(`<p><strong>Can't reach the API.</strong></p><p>${esc(err.message)}. Check that <code>uvicorn main:app</code> is running.</p>
+                <button type="button" class="btn" id="retry-live"><svg class="icon"><use href="#i-retry"/></svg>Try again</button>`);
+            $('retry-live').addEventListener('click', startLive);
+            setStatus('offline', 'API unreachable');
+            renderFeed();
+            return;
+        }
+        const after = state.rows.reduce((m, r) => Math.max(m, r.id), 0);
+        const es = new EventSource(`/stream?symbol=${encodeURIComponent(state.symbol)}&after_id=${after}`);
+        state.liveStream = es;
+        es.addEventListener('trades', (e) => addRows(JSON.parse(e.data)));
+        es.addEventListener('anomaly', (e) => addAnomaly(JSON.parse(e.data)));
+        es.addEventListener('health', (e) => renderHealth(JSON.parse(e.data)));
+        es.onopen = () => { if ($('banner').classList.contains('error')) showBanner(null); };
+        es.onerror = () => {
+            setStatus('offline', 'Reconnecting…');
+            showBanner('error', '<p><strong>Lost the connection to the API.</strong> Reconnecting automatically; anything missed is caught up when it returns.</p>');
+        };
+    }
+    function stopLive() {
+        if (state.liveStream) { state.liveStream.close(); state.liveStream = null; }
+    }
+
+    // ------------------------------------------------------------------ replay mode
+    function describeFile(f) {
+        const date = new Date(f.start).toLocaleDateString([], { day: 'numeric', month: 'short', year: 'numeric' });
+        const name = f.name.startsWith('crash-2025-10-10') ? '10 Oct 2025 crash' : `${f.name.replace('.jsonl', '')} · ${date}`;
+        return `${name} · ${Math.round(f.hours * 10) / 10} h · ${f.trades.toLocaleString()} trades`;
+    }
+    async function loadReplayFiles() {
+        const select = $('replay-file');
+        try {
+            state.replay.files = await getJSON('/replay/files');
+        } catch (err) {
+            select.innerHTML = '<option>Could not load recordings</option>';
+            return;
+        }
+        if (!state.replay.files.length) {
+            select.innerHTML = '<option value="">No recordings found</option>';
+            $('replay-start').disabled = true;
+            $('replay-status').textContent = 'Record one with scripts/record_trades.py into data/.';
+            return;
+        }
+        const preferred = state.replay.files.find((f) => f.name.startsWith('crash-')) || state.replay.files[0];
+        select.innerHTML = state.replay.files.map((f) => `<option value="${esc(f.name)}"${f === preferred ? ' selected' : ''}>${esc(describeFile(f))}</option>`).join('');
+        state.replay.file = preferred.name;
+        updateReplayEstimate();
+    }
+    function currentFile() { return state.replay.files.find((f) => f.name === $('replay-file').value); }
+    function updateReplayEstimate() {
+        const f = currentFile();
+        if (!f || state.replayStream) return;
+        const seconds = f.hours * 3600 / state.replay.speed;
+        const length = seconds < 90 ? `${Math.round(seconds)} s` : `${Math.round(seconds / 60)} min`;
+        $('replay-status').textContent = `${f.hours} h of trading at ${state.replay.speed}× takes about ${length}. Symbols: ${f.symbols.join(', ')}.`;
+        fillSymbols(f.symbols);
+    }
+    $('replay-file').addEventListener('change', updateReplayEstimate);
+    $('speed').addEventListener('click', (e) => {
+        const btn = e.target.closest('button[data-speed]');
+        if (!btn) return;
+        state.replay.speed = Number(btn.dataset.speed);
+        for (const b of $('speed').querySelectorAll('button')) b.setAttribute('aria-pressed', String(b === btn));
+        updateReplayEstimate();
+    });
+    $('replay-start').addEventListener('click', () => (state.replayStream ? stopReplay('Stopped.') : startReplay()));
+
+    function setReplayButton(running) {
+        $('replay-start').innerHTML = running
+            ? '<svg class="icon"><use href="#i-stop"/></svg><span>Stop replay</span>'
+            : '<svg class="icon"><use href="#i-play"/></svg><span>Start replay</span>';
+        $('replay-file').disabled = running;
+        for (const b of $('speed').querySelectorAll('button')) b.disabled = running;
+    }
+    function startReplay() {
+        const f = currentFile();
+        if (!f) return;
+        stopReplay();
+        clearPending();
+        if (!f.symbols.includes(state.symbol)) { state.symbol = f.symbols[0]; $('symbol').value = state.symbol; }
+        state.rows = [];
+        state.anomalies = [];
+        renderFeed();
+        renderChart();
+        showOverlay('<p class="muted">Starting replay…</p>');
+        const date = new Date(f.start).toLocaleDateString([], { day: 'numeric', month: 'long', year: 'numeric' });
+        showBanner('replay', `<p><strong>Replay, not live data.</strong> Recorded Binance.US trades from ${esc(date)}, scored by the same model at ${state.replay.speed}× speed. Nothing is written to the database.</p>`);
+        setStatus('replay', `Replay · ${state.replay.speed}×`);
+        setReplayButton(true);
+        const url = `/replay/stream?file=${encodeURIComponent(f.name)}&speed=${state.replay.speed}&symbol=${encodeURIComponent(state.symbol)}`;
+        const es = new EventSource(url);
+        state.replayStream = es;
+        es.addEventListener('trades', (e) => addRows(JSON.parse(e.data)));
+        es.addEventListener('anomaly', (e) => addAnomaly(JSON.parse(e.data)));
+        es.addEventListener('progress', (e) => {
+            const p = JSON.parse(e.data);
+            const pct = Math.round(p.sent / p.total * 100);
+            $('replay-fill').style.width = `${pct}%`;
+            $('replay-progress').setAttribute('aria-valuenow', String(pct));
+            $('replay-status').textContent = `${p.sent.toLocaleString()} of ${p.total.toLocaleString()} trades · market time ${fmtDateTime(p.market_time)}`;
+        });
+        es.addEventListener('done', (e) => {
+            const d = JSON.parse(e.data);
+            const total = Object.values(d.anomalies).reduce((a, b) => a + b, 0);
+            flush();
+            stopReplay(`Finished: ${d.trades.toLocaleString()} trades in ${d.seconds} s, ${total} anomalies flagged.`);
+            announce(`Replay finished, ${total} anomalies flagged`);
+        });
+        es.onerror = () => stopReplay('The replay stopped because the connection to the API was lost.');
+    }
+    function stopReplay(message) {
+        if (state.replayStream) { state.replayStream.close(); state.replayStream = null; }
+        setReplayButton(false);
+        if (message) $('replay-status').textContent = message;
+        if (state.mode === 'replay') setStatus('replay', 'Replay');
+    }
+
+    // ------------------------------------------------------------------ mode + symbol
+    function setMode(mode) {
+        state.mode = mode;
+        $('mode-live').setAttribute('aria-pressed', String(mode === 'live'));
+        $('mode-replay').setAttribute('aria-pressed', String(mode === 'replay'));
+        $('replay-bar').hidden = mode !== 'replay';
+        $('strip-note').hidden = mode !== 'replay';
+        closeDrawer();
+        if (mode === 'live') {
+            stopReplay();
+            clearInterval(state.healthTimer);
+            showBanner(null);
+            fillSymbols(state.liveSymbols || [state.symbol]);
+            setStatus('connecting', 'Connecting…');
+            startLive();
+        } else {
+            stopLive();
+            showBanner(null);
+            setStatus('replay', 'Replay');
+            state.rows = []; state.anomalies = [];
+            renderChart(); renderFeed();
+            showOverlay('<p><strong>Replay mode</strong></p><p>Pick a recording and a speed above, then start. The pipeline health strip keeps showing the live pipeline.</p>');
+            updateReplayEstimate();
+            state.healthTimer = setInterval(pollHealth, 10000); // live health still refreshes while replaying
+        }
+    }
+    $('mode-live').addEventListener('click', () => state.mode !== 'live' && setMode('live'));
+    $('mode-replay').addEventListener('click', () => state.mode !== 'replay' && setMode('replay'));
+
+    function fillSymbols(symbols) {
+        const select = $('symbol');
+        const list = symbols.includes(state.symbol) ? symbols : [state.symbol, ...symbols];
+        select.innerHTML = list.map((s) => `<option value="${esc(s)}">${esc(s)}</option>`).join('');
+        select.value = state.symbol;
+    }
+    $('symbol').addEventListener('change', (e) => {
+        state.symbol = e.target.value;
+        store.set('symbol', state.symbol);
+        if (state.mode === 'live') startLive();
+        else if (state.replayStream) startReplay();
+        else renderChart();
+        if (state.health) renderHealth(state.health);
+    });
+
+    // ------------------------------------------------------------------ drawer
+    function openDrawer(row, opener) {
+        state.drawerOpener = opener || document.activeElement;
+        document.querySelectorAll('.feed-item[aria-current]').forEach((b) => b.removeAttribute('aria-current'));
+        if (opener?.classList?.contains('feed-item')) opener.setAttribute('aria-current', 'true');
+        const drawer = $('drawer');
+        $('drawer-title').textContent = `${row.symbol} · ${TYPE[row.anomaly_type]?.label || 'Trade'}${row.is_anomaly ? ' anomaly' : ''}`;
+        $('drawer-sub').textContent = `${fmtDateTime(row.trade_time)} · trade #${row.trade_id}`;
+        drawer.classList.add('open');
+        drawer.focus();
+        if (row.reasons && row.context) { renderDrawer(row, row.context, row.reasons); return; }  // replay rows carry their own detail
+        $('drawer-body').innerHTML = '<div class="skeleton" style="width:70%"></div><div class="skeleton" style="width:90%"></div><div class="skeleton" style="height:160px"></div>';
+        getJSON(`/anomalies/${encodeURIComponent(row.symbol)}/${row.trade_id}`)
+            .then((d) => renderDrawer(d.trade, d.context, d.reasons))
+            .catch((err) => {
+                $('drawer-body').innerHTML = `<p><strong>Couldn't load this trade.</strong> ${esc(err.message)}</p>
+                    <button type="button" class="btn" id="drawer-retry"><svg class="icon"><use href="#i-retry"/></svg>Try again</button>`;
+                $('drawer-retry').addEventListener('click', () => openDrawer(row, opener));
+            });
+    }
+    function renderDrawer(trade, context, reasons) {
+        $('drawer-body').innerHTML = `
+            <dl class="facts">
+                <div><dt>Price</dt><dd>${fmtPrice(trade.price)}</dd></div>
+                <div><dt>Quantity</dt><dd>${Number(trade.quantity).toLocaleString(undefined, { maximumFractionDigits: 8 })}</dd></div>
+                <div><dt>Price move score</dt><dd>${trade.price_z == null ? '—' : (trade.price_z >= 0 ? '+' : '') + fmtNum(trade.price_z, 2)}</dd></div>
+                <div><dt>Size vs median</dt><dd>${trade.size_ratio == null ? '—' : fmtNum(trade.size_ratio, 1) + '×'}</dd></div>
+            </dl>
+            <section><h3 style="margin-bottom:10px">Why it was flagged</h3>
+                <ul class="reasons">${reasons.map((r) => `<li class="${r.flagged ? 'hit' : 'miss'}">
+                    <svg class="icon"><use href="${r.flagged ? '#i-flag' : '#i-dash'}"/></svg><span>${esc(r.text)}</span></li>`).join('')}</ul>
+            </section>
+            <section><h3 style="margin-bottom:10px">Trades around it</h3>
+                <div class="mini"><canvas id="mini-chart" role="img" aria-label="Price of the ${context.length} trades around this one, with this trade highlighted"></canvas></div>
+                <p class="muted" style="margin:8px 0 0">${context.length} trades of ${esc(trade.symbol)}; this trade is the large outlined marker.</p>
+            </section>`;
+        const c = chartColors();
+        const rows = context.map((r) => r.trade_id === trade.trade_id
+            ? { ...r, _focus: true, is_anomaly: true, anomaly_type: trade.anomaly_type || 'price' }
+            : r);
+        if (miniChart) miniChart.destroy();
+        miniChart = new Chart($('mini-chart'), {
+            type: 'line',
+            data: { labels: rows.map((r) => fmtTime(r.trade_time)),
+                    datasets: [{ data: rows.map((r) => Number(r.price)), rows, borderColor: c.line, borderWidth: 1.5, tension: 0, ...pointStyles(rows, c) }] },
+            options: baseOptions(c),
+        });
+        miniChart.options.scales.x.ticks.maxTicksLimit = 3;
+        miniChart.update('none');
+    }
+    function closeDrawer() {
+        const drawer = $('drawer');
+        if (!drawer.classList.contains('open')) return;
+        drawer.classList.remove('open');
+        if (state.drawerOpener && document.contains(state.drawerOpener)) state.drawerOpener.focus();
+    }
+    $('drawer-close').addEventListener('click', closeDrawer);
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeDrawer(); });
+
+    // ------------------------------------------------------------------ tabs
+    const tabs = [$('tab-history'), $('tab-health')];
+    function selectTab(tab) {
+        for (const t of tabs) {
+            const on = t === tab;
+            t.setAttribute('aria-selected', String(on));
+            t.tabIndex = on ? 0 : -1;
+            $(t.getAttribute('aria-controls')).hidden = !on;
+        }
+        if (tab.id === 'tab-health' && !state.health) {
+            $('health-view').innerHTML = '<div class="skeleton" style="width:60%"></div>';
+            pollHealth();
+        }
+    }
+    tabs.forEach((t, i) => {
+        t.addEventListener('click', () => selectTab(t));
+        t.addEventListener('keydown', (e) => {
+            if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return;
+            const next = tabs[(i + (e.key === 'ArrowRight' ? 1 : tabs.length - 1)) % tabs.length];
+            next.focus();
+            selectTab(next);
+        });
+    });
+
+    // ------------------------------------------------------------------ anomaly history
+    function historyQuery() {
+        const form = new FormData($('history-form'));
+        const q = new URLSearchParams();
+        for (const key of ['symbol', 'type']) if (form.get(key)) q.set(key, form.get(key));
+        for (const key of ['start', 'end']) if (form.get(key)) q.set(key, new Date(form.get(key)).toISOString());
+        return q;
+    }
+    async function loadHistory(more = false) {
+        const box = $('history');
+        if (!more) { state.historyCursor = null; box.innerHTML = '<div class="skeleton" style="width:100%;height:120px"></div>'; }
+        const q = historyQuery();
+        q.set('limit', '25');
+        if (state.historyCursor) q.set('before_id', state.historyCursor);
+        let rows, count;
+        try {
+            const countQ = historyQuery();
+            [rows, count] = await Promise.all([getJSON(`/anomalies?${q}`), more ? Promise.resolve(null) : getJSON(`/anomalies/count?${countQ}`)]);
+        } catch (err) {
+            box.innerHTML = `<p><strong>Couldn't load the history.</strong> ${esc(err.message)}</p>
+                <button type="button" class="btn" id="history-retry"><svg class="icon"><use href="#i-retry"/></svg>Try again</button>`;
+            $('history-retry').addEventListener('click', () => loadHistory());
+            return;
+        }
+        if (!more && !rows.length) {
+            box.innerHTML = `<div class="empty"><strong>No anomalies match these filters.</strong>Try a wider date range or another symbol.</div>`;
+            return;
+        }
+        const body = rows.map((r) => `<tr class="clickable" tabindex="0" data-symbol="${esc(r.symbol)}" data-trade="${r.trade_id}">
+            <td class="mono">${fmtDateTime(r.trade_time)}</td><td>${esc(r.symbol)}</td><td>${badge(r.anomaly_type)}</td>
+            <td class="num">${fmtPrice(r.price)}</td><td class="num">${fmtNum(r.price_z, 2)}</td>
+            <td class="num">${r.size_ratio == null ? (r.volume_z == null ? '—' : `vol z ${fmtNum(r.volume_z, 1)}`) : fmtNum(r.size_ratio, 1) + '×'}</td></tr>`).join('');
+        if (!more) {
+            box.innerHTML = `<div class="table-wrap"><table><caption class="sr-only">Anomaly history, newest first</caption>
+                <thead><tr><th>Time</th><th>Symbol</th><th>Type</th><th class="num">Price</th><th class="num">Price z</th><th class="num">Size</th></tr></thead>
+                <tbody id="history-body">${body}</tbody></table></div>
+                <div class="table-foot"><span class="muted" id="history-count"></span><button type="button" class="btn" id="history-more">Load more</button></div>`;
+            $('history-more').addEventListener('click', () => loadHistory(true));
+            state.historyTotal = count.count;
+        } else {
+            $('history-body').insertAdjacentHTML('beforeend', body);
+        }
+        state.historyCursor = rows.length ? rows[rows.length - 1].id : state.historyCursor;
+        const shown = $('history-body').rows.length;
+        $('history-count').textContent = `Showing ${shown.toLocaleString()} of ${state.historyTotal.toLocaleString()}`;
+        $('history-more').hidden = shown >= state.historyTotal || rows.length < 25;
+    }
+    $('history-form').addEventListener('submit', (e) => { e.preventDefault(); loadHistory(); });
+    $('history-form').addEventListener('reset', () => setTimeout(() => loadHistory(), 0));
+    $('history').addEventListener('click', (e) => openHistoryRow(e.target.closest('tr.clickable')));
+    $('history').addEventListener('keydown', (e) => {
+        if ((e.key === 'Enter' || e.key === ' ') && e.target.matches('tr.clickable')) { e.preventDefault(); openHistoryRow(e.target); }
+    });
+    function openHistoryRow(tr) {
+        if (!tr) return;
+        openDrawer({ symbol: tr.dataset.symbol, trade_id: Number(tr.dataset.trade), trade_time: tr.cells[0].textContent,
+                     anomaly_type: tr.querySelector('.badge')?.classList[1], is_anomaly: true }, tr);
+    }
+
+    // ------------------------------------------------------------------ start
+    async function init() {
+        applyTheme(store.get('theme'));
+        renderAlertsButton();
+        try {
+            const symbols = await getJSON('/symbols');
+            state.liveSymbols = symbols.map((s) => s.symbol);
+            $('h-symbol').insertAdjacentHTML('beforeend', state.liveSymbols.map((s) => `<option value="${esc(s)}">${esc(s)}</option>`).join(''));
+            if (state.liveSymbols.length && !state.liveSymbols.includes(state.symbol)) state.symbol = state.liveSymbols[0];
+        } catch { state.liveSymbols = [state.symbol]; }
+        fillSymbols(state.liveSymbols);
+        loadReplayFiles();
+        loadHistory();
+        pollHealth();
+        startLive();
+    }
+    window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => applyTheme());
+    // charts measure their labels when drawn; redraw once the web fonts have arrived
+    document.fonts?.ready.then(() => { priceChart.resize(); priceChart.update('none'); });
+    init();
     </script>
 </body>
 </html>
