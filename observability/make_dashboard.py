@@ -32,6 +32,7 @@ def panel(title, kind, targets, x, y, w, h, unit=None, description="", threshold
     if kind == "timeseries":
         p["options"] = {"legend": {"displayMode": "list", "placement": "bottom"}, "tooltip": {"mode": "multi"}}
     if kind == "stat":
+        p["fieldConfig"]["defaults"]["noValue"] = "Not reporting"  # says why, instead of "No data"
         p["options"] = {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "value", "graphMode": "none"}
     next_id += 1
     panels.append(p)
@@ -44,19 +45,21 @@ def row(title, y):
     next_id += 1
 
 
-GREEN, RED, ORANGE = "green", "red", "orange"
+# NEUTRAL is the "no value" colour: a stopped service must not look like an alarm (red) or like
+# "all good" (green), so every threshold list starts with it and real values begin at 0
+GREEN, RED, NEUTRAL = "green", "red", "text"
 
 row("Service levels", 0)
 panel("Completeness (worst symbol, 24 h)", "stat", [("min(pipeline_completeness_ratio) * 100", "")], 0, 1, 6, 4,
       unit="percent", decimals=2, description="Stored trade IDs / expected trade IDs. Target: 99.9% or more.",
-      thresholds=[{"color": RED, "value": None}, {"color": GREEN, "value": 99.9}])
+      thresholds=[{"color": NEUTRAL, "value": None}, {"color": RED, "value": 0}, {"color": GREEN, "value": 99.9}])
 panel("End-to-end latency p95 (5 min)", "stat",
       [("histogram_quantile(0.95, sum by (le) (rate(pipeline_end_to_end_latency_seconds_bucket[5m])))", "")],
       6, 1, 6, 4, unit="s", description="Producer receipt to row stored. Target: 2 s or less.",
-      thresholds=[{"color": GREEN, "value": None}, {"color": RED, "value": 2}])
+      thresholds=[{"color": NEUTRAL, "value": None}, {"color": GREEN, "value": 0}, {"color": RED, "value": 2}])
 panel("Consumer lag (worst group)", "stat", [("max(pipeline_consumer_lag_messages)", "")], 12, 1, 6, 4,
       description="Messages not yet processed. Target: under 1,000.",
-      thresholds=[{"color": GREEN, "value": None}, {"color": RED, "value": 1000}])
+      thresholds=[{"color": NEUTRAL, "value": None}, {"color": GREEN, "value": 0}, {"color": RED, "value": 1000}])
 panel("Services up", "stat", [("sum(up)", "answering"), ("count(up)", "configured")], 18, 1, 6, 4,
       description="Scraped services answering / services configured (producer, detector, storage, gap checker, API).")
 

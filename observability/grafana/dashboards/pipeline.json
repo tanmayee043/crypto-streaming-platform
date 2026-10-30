@@ -64,8 +64,12 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "red",
+                "color": "text",
                 "value": null
+              },
+              {
+                "color": "red",
+                "value": 0
               },
               {
                 "color": "green",
@@ -75,7 +79,8 @@
           },
           "color": {
             "mode": "thresholds"
-          }
+          },
+          "noValue": "Not reporting"
         },
         "overrides": []
       },
@@ -122,8 +127,12 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "green",
+                "color": "text",
                 "value": null
+              },
+              {
+                "color": "green",
+                "value": 0
               },
               {
                 "color": "red",
@@ -133,7 +142,8 @@
           },
           "color": {
             "mode": "thresholds"
-          }
+          },
+          "noValue": "Not reporting"
         },
         "overrides": []
       },
@@ -179,8 +189,12 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "green",
+                "color": "text",
                 "value": null
+              },
+              {
+                "color": "green",
+                "value": 0
               },
               {
                 "color": "red",
@@ -190,7 +204,8 @@
           },
           "color": {
             "mode": "thresholds"
-          }
+          },
+          "noValue": "Not reporting"
         },
         "overrides": []
       },
@@ -240,7 +255,9 @@
         }
       ],
       "fieldConfig": {
-        "defaults": {},
+        "defaults": {
+          "noValue": "Not reporting"
+        },
         "overrides": []
       },
       "options": {
