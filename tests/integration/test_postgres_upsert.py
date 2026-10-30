@@ -1,0 +1,86 @@
+"""Runs the real upsert against a throwaway Postgres container (needs Docker)."""
+
+from pathlib import Path
+
+import psycopg2
+import pytest
+
+from storage_consumer import to_row, write_batch, write_with_retry
+from tests.conftest import make_record
+
+pytestmark = pytest.mark.integration
+
+SCHEMA = (Path(__file__).resolve().parents[2] / "schema.sql").read_text()
+
+
+@pytest.fixture(scope="module")
+def postgres_url():
+    postgres = pytest.importorskip("testcontainers.postgres")
+    try:
+        container = postgres.PostgresContainer("postgres:16.15", driver=None)
+        container.start()
+    except Exception as e:  # Docker not running
+        pytest.skip(f"Docker unavailable: {e}")
+    try:
+        yield container.get_connection_url()
+    finally:
+        container.stop()
+
+
+@pytest.fixture
+def conn(postgres_url):
+    connection = psycopg2.connect(postgres_url)
+    with connection, connection.cursor() as cur:
+        cur.execute("DROP TABLE IF EXISTS trades")
+        cur.execute(SCHEMA)
+    yield connection
+    connection.close()
+
+
+def count_rows(conn):
+    with conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM trades")
+        return cur.fetchone()[0]
+
+
+def test_writing_the_same_batch_twice_leaves_one_copy(conn):
+    rows = [to_row(make_record(i)) for i in range(1, 101)]
+    assert write_batch(conn, rows) == (100, 0)
+    assert write_batch(conn, rows) == (0, 100)  # the redelivery is absorbed as updates
+    assert count_rows(conn) == 100
+
+
+def test_redelivery_updates_values(conn):
+    write_batch(conn, [to_row(make_record(1, price_z=0.1))])
+    write_batch(conn, [to_row(make_record(1, price_z=4.2, is_anomaly=True, anomaly_type="price"))])
+    with conn.cursor() as cur:
+        cur.execute("SELECT price_z, is_anomaly, anomaly_type FROM trades")
+        assert cur.fetchall() == [(4.2, True, "price")]
+
+
+def test_same_trade_id_on_different_symbols_are_different_rows(conn):
+    write_batch(conn, [to_row(make_record(1)), to_row(make_record(1, symbol="ETHUSDT"))])
+    assert count_rows(conn) == 2
+
+
+def test_failed_batch_writes_nothing(conn):
+    good = to_row(make_record(1))
+    # trade_time is NOT NULL, so this second row makes the statement fail mid-batch
+    broken = (*to_row(make_record(2))[:2], None, *to_row(make_record(2))[3:])
+    with pytest.raises(psycopg2.Error):
+        write_batch(conn, [good, broken])
+    assert count_rows(conn) == 0
+
+
+def test_retry_reconnects_after_connection_loss(postgres_url, conn):
+    broken = psycopg2.connect(postgres_url)
+    broken.close()  # simulate Postgres dropping the connection
+    new_conn, inserted, _ = write_with_retry(
+        broken,
+        [to_row(make_record(1))],
+        reconnect=lambda: psycopg2.connect(postgres_url),
+        sleep=lambda _s: None,
+    )
+    assert inserted == 1
+    assert count_rows(conn) == 1
+    new_conn.close()
