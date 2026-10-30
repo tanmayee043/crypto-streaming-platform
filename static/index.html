@@ -123,6 +123,17 @@
             }
         });
 
+        // the pipeline can stream several symbols; the chart shows one
+        const SYMBOL = 'BTCUSDT';
+
+        // warm-up trades have no scores yet (null), and older rows have volume_z instead of size_ratio
+        function describeScores(a) {
+            const z = a.price_z == null ? '—' : a.price_z.toFixed(2);
+            const size = a.size_ratio != null ? `size=${a.size_ratio.toFixed(1)}x median`
+                       : a.volume_z != null ? `vol_z=${a.volume_z.toFixed(2)}` : 'size=—';
+            return `price_z=${z}, ${size}`;
+        }
+
         function setLiveDot(ok) {
             document.getElementById('live-dot').classList.toggle('stale', !ok);
         }
@@ -134,13 +145,13 @@
                         : 'VOLUME';
             banner.textContent =
                 `🚨 ${label} ANOMALY — price=${a.price.toFixed(2)} qty=${a.quantity.toFixed(5)} ` +
-                `(price_z=${a.price_z.toFixed(2)}, vol_z=${a.volume_z.toFixed(2)})`;
+                `(${describeScores(a)})`;
             banner.classList.add('show');
             setTimeout(() => banner.classList.remove('show'), 6000);
         }
 
         async function refreshChart() {
-            const res = await fetch('/trades?limit=50');
+            const res = await fetch(`/trades?limit=50&symbol=${SYMBOL}`);
             const trades = (await res.json()).reverse(); // oldest first, chart reads left-to-right
 
             chart.data.labels = trades.map(t => new Date(t.trade_time).toLocaleTimeString());
@@ -165,8 +176,8 @@
 
         async function refreshAnomalyList() {
             const [listRes, countRes] = await Promise.all([
-                fetch('/anomalies?limit=10'),
-                fetch('/anomalies/count')
+                fetch(`/anomalies?limit=10&symbol=${SYMBOL}`),
+                fetch(`/anomalies/count?symbol=${SYMBOL}`)
             ]);
             const anomalies = await listRes.json();
             const countData = await countRes.json();
@@ -191,7 +202,7 @@
                     [${(a.anomaly_type || '').toUpperCase()}]
                     ${new Date(a.trade_time).toLocaleTimeString()} —
                     price=${a.price.toFixed(2)} qty=${a.quantity.toFixed(5)}
-                    (price_z=${a.price_z.toFixed(2)}, vol_z=${a.volume_z.toFixed(2)})
+                    (${describeScores(a)})
                 </div>`
             ).join('');
         }
