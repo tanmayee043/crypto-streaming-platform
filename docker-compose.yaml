@@ -55,5 +55,42 @@ services:
       retries: 30
       
       
+  # --- Observability: only starts with `docker compose --profile observability up -d` ---
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    container_name: prometheus
+    profiles: ["observability"]
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"  # lets Linux reach the services running on the host
+
+  grafana:
+    image: grafana/grafana:12.1.0
+    container_name: grafana
+    profiles: ["observability"]
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_AUTH_ANONYMOUS_ENABLED: "true"      # local use: dashboards viewable without logging in
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/pipeline.json
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - prometheus
+
+  jaeger:
+    image: jaegertracing/jaeger:2.8.0
+    container_name: jaeger
+    profiles: ["observability"]
+    ports:
+      - "16686:16686"  # trace viewer
+      - "4318:4318"    # OpenTelemetry (OTLP over HTTP), where the API sends its traces
+
 volumes:
   pgdata:

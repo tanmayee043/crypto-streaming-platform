@@ -1,0 +1,17 @@
+# Prometheus scrapes the services' /metrics endpoints every 5 seconds. The services run on
+# the host (python producer.py, ...), so from inside Docker they're at host.docker.internal.
+global:
+  scrape_interval: 5s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: producer
+    static_configs: [{ targets: ["host.docker.internal:8001"] }]
+  - job_name: detector
+    static_configs: [{ targets: ["host.docker.internal:8002"] }]
+  - job_name: storage
+    static_configs: [{ targets: ["host.docker.internal:8003"] }]
+  - job_name: gap_checker
+    static_configs: [{ targets: ["host.docker.internal:8004"] }]
+  - job_name: api
+    static_configs: [{ targets: ["host.docker.internal:8000"] }]
