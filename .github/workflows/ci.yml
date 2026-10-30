@@ -34,7 +34,7 @@ jobs:
   crash-test:
     needs: test
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -49,6 +49,8 @@ jobs:
           docker compose up -d --wait kafka postgres
       - name: Kill the storage consumer 20 times, then check for missing/duplicate rows
         run: python scripts/crash_test.py --kills 20
+      - name: Kill the anomaly detector 10 times, then check rows and scores
+        run: python scripts/detector_crash_test.py --file tests/data/sample_trades.jsonl --kills 10 --rate 100
       - name: Upload crash test logs
         if: always()
         uses: actions/upload-artifact@v4
