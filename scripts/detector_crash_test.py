@@ -131,6 +131,7 @@ def main():
         "ANALYTICS_DLQ_TOPIC": f"{analytics_topic}-dlq",
         "POSTGRES_DB": DB_NAME,
         "PYTHONUNBUFFERED": "1",
+        "METRICS_PORT": "0",  # several copies may run at once; no /metrics port clashes
     }
     import os
     detector_env = {**os.environ, **common, "DETECTOR_GROUP_ID": detector_group,

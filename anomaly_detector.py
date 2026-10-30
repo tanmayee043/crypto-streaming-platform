@@ -3,6 +3,7 @@ import math
 import statistics
 from collections import deque
 from confluent_kafka import Consumer, KafkaException, Producer, TopicPartition
+from prometheus_client import Counter, Histogram, start_http_server
 
 import logging
 import time
@@ -39,6 +40,21 @@ SIZE_RATIO_THRESHOLD = float(os.getenv("SIZE_RATIO_THRESHOLD", "50"))
 REBUILD_LOOKBACK = int(os.getenv("REBUILD_LOOKBACK", "2000"))
 
 METRICS_INTERVAL_SECONDS = float(os.getenv("METRICS_INTERVAL_SECONDS", "60"))
+METRICS_PORT = int(os.getenv("METRICS_PORT", "8002"))  # 0 turns the /metrics endpoint off
+# localhost only: Prometheus runs on this machine, and nothing else should reach the metrics
+METRICS_HOST = os.getenv("METRICS_HOST", "127.0.0.1")
+
+# --- Prometheus metrics (scraped from http://localhost:8002/metrics) ---
+LATENCY_BUCKETS = (0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30)  # seconds
+TRADES_SCORED = Counter("detector_trades_total", "Trades processed", ["symbol"])
+ANOMALIES = Counter("detector_anomalies_total", "Anomalies flagged", ["symbol", "type"])
+DEAD_LETTERS = Counter("detector_dead_letters_total", "Trades sent to the dead-letter topic")
+REBUILT_TRADES = Counter("detector_rebuild_trades_total", "Trades re-read from Kafka to rebuild windows")
+BATCH_SECONDS = Histogram("detector_batch_seconds", "Time to score, publish and commit one batch",
+                          buckets=LATENCY_BUCKETS)
+# stage 1 of the end-to-end latency: producer received the trade -> its result is safely in Kafka
+STAGE_LATENCY = Histogram("detector_stage_latency_seconds",
+                          "Producer receipt to detector result acknowledged by Kafka", buckets=LATENCY_BUCKETS)
 
 # --- the anomaly model ---
 #
@@ -208,6 +224,7 @@ def rebuild_windows(committed):
                     try:
                         update_window(json.loads(msg.value()), tp.partition)
                         replayed += 1
+                        REBUILT_TRADES.inc()
                     except (ValueError, KeyError, TypeError):
                         pass  # it went to the dead-letter topic the first time round
                     if msg.offset() == start_at - 1:
@@ -245,6 +262,8 @@ def process_batch(consumer, producer, messages):
     offsets are only committed once every result is safely in Kafka."""
     global processed_count, anomaly_count
     log.debug(f"batch received messages={len(messages)}")
+    batch_started = time.time()
+    received_at = []
     valid = []
     for msg in messages:
         if msg.error():
@@ -259,12 +278,18 @@ def process_batch(consumer, producer, messages):
         except (ValueError, KeyError, TypeError) as e:
             log.error(f"Bad trade at offset {msg.offset()}, sent to '{DEAD_LETTER_TOPIC}': {e}")
             send_to_dead_letter(producer, DEAD_LETTER_TOPIC, msg, e)
+            DEAD_LETTERS.inc()
             continue
+
+        TRADES_SCORED.labels(trade["s"]).inc()
+        if trade.get("received_at") is not None:
+            received_at.append(trade["received_at"])
 
         if price_z is not None or size_ratio is not None:
             processed_count += 1
         if anomaly_type:
             anomaly_count += 1
+            ANOMALIES.labels(trade["s"], anomaly_type).inc()
             log.info(f"🚨 {anomaly_type.upper()} ANOMALY — {trade['s']} price={result['price']}, "
                      f"qty={result['quantity']}, price_z={price_z}, size_ratio={size_ratio}")
 
@@ -287,12 +312,16 @@ def process_batch(consumer, producer, messages):
         raise RuntimeError("Results were not delivered to Kafka; stopping without committing")
 
     log.debug(f"batch written results={len(valid)}")
+    acked_ms = time.time() * 1000
+    for t in received_at:
+        STAGE_LATENCY.observe(max(acked_ms - t, 0) / 1000)
 
     try:
         consumer.commit(offsets=next_offsets(valid), asynchronous=False)
         log.debug("offsets committed")
     except KafkaException as e:
         log.warning(f"Offset commit failed, batch will be reprocessed (the upsert absorbs it): {e}")
+    BATCH_SECONDS.observe(time.time() - batch_started)
 
 
 def consumer_config():
@@ -310,6 +339,8 @@ def consumer_config():
 
 
 def main():
+    if METRICS_PORT:
+        start_http_server(METRICS_PORT, addr=METRICS_HOST)
     consumer = Consumer(consumer_config())
     consumer.subscribe([INPUT_TOPIC], on_assign=on_assign, on_revoke=on_revoke)
     # idempotence: Kafka drops duplicates caused by the producer's own retries

@@ -22,6 +22,9 @@ class FakeMessage:
     def key(self):
         return self._key
 
+    def timestamp(self):
+        return (1, 1_700_000_000_000)  # (TIMESTAMP_CREATE_TIME, epoch ms), like a real message
+
     def offset(self):
         return self._offset
 

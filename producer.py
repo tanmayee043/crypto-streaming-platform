@@ -2,6 +2,7 @@ import asyncio
 import json
 
 from confluent_kafka import Producer
+from prometheus_client import Counter, start_http_server
 import websockets
 
 import logging
@@ -25,6 +26,14 @@ SYMBOLS = [s.strip().lower() for s in os.getenv("SYMBOLS", os.getenv("SYMBOL", "
 URL = "wss://stream.binance.us:9443/stream?streams=" + "/".join(f"{s}@trade" for s in SYMBOLS)
 
 MAX_BACKOFF_SECONDS = 60
+METRICS_PORT = int(os.getenv("METRICS_PORT", "8001"))  # 0 turns the /metrics endpoint off
+# localhost only: Prometheus runs on this machine, and nothing else should reach the metrics
+METRICS_HOST = os.getenv("METRICS_HOST", "127.0.0.1")
+
+# --- Prometheus metrics (scraped from http://localhost:8001/metrics) ---
+TRADES_RECEIVED = Counter("producer_trades_total", "Trades received from Binance and sent to Kafka", ["symbol"])
+RECONNECTS = Counter("producer_reconnects_total", "WebSocket reconnects")
+DELIVERY_FAILURES = Counter("producer_delivery_failures_total", "Trades Kafka did not accept")
 
 # idempotence: Kafka drops duplicates caused by the producer's own retries
 producer = Producer({"bootstrap.servers": KAFKA_BOOTSTRAP_SERVERS, "enable.idempotence": True})
@@ -46,6 +55,7 @@ def maybe_log_metrics():
 
 def delivery_report(err,msg):
     if err:
+        DELIVERY_FAILURES.inc()
         print(f"Deliver failed: {err}")
 
 
@@ -76,6 +86,7 @@ async def stream_trades():
             trade = json.loads(message)["data"]
             trade["received_at"] = time.time() * 1000  # our clock time, ms — added for latency measurement
             send(trade)
+            TRADES_RECEIVED.labels(trade["s"]).inc()
             producer.poll(0)    # triggers delivery callbacks, non-blocking
             trade_count+=1
             maybe_log_metrics()
@@ -90,6 +101,7 @@ async def run_with_reconnect():
             # treat it as a disconnect and reset backoff since the connection was healthy
             backoff = 1
         except (websockets.exceptions.ConnectionClosed, OSError) as e:
+            RECONNECTS.inc()
             log.warning(f"Connection lost ({e}). Reconnecting in {backoff}s...")
             await asyncio.sleep(backoff)
             backoff = min(backoff * 2, MAX_BACKOFF_SECONDS)
@@ -97,6 +109,8 @@ async def run_with_reconnect():
 
 
 if __name__ == "__main__":
+    if METRICS_PORT:
+        start_http_server(METRICS_PORT, addr=METRICS_HOST)
     try:
         asyncio.run(run_with_reconnect())
     except KeyboardInterrupt:
