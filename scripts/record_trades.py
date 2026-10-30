@@ -10,6 +10,9 @@ Two ways to get trades:
 
     # history: page back through the public REST API (no API key needed)
     python scripts/record_trades.py history --symbols BTCUSDT,ETHUSDT --count 20000 --out data/history.jsonl
+    # a time window, e.g. a volatile day (UTC)
+    python scripts/record_trades.py history --symbols BTCUSDT --start 2025-10-10T19:00 \
+        --end 2025-10-11T01:00 --out data/crash.jsonl
     # an older stretch, e.g. to test a model on data it wasn't tuned on
     python scripts/record_trades.py history --symbols BTCUSDT --count 20000 --skip 100000 --out data/older.jsonl
 
@@ -18,6 +21,7 @@ per symbol, so any jump means a trade we never received.
 """
 
 import argparse
+from datetime import datetime, timezone
 import asyncio
 import json
 from itertools import pairwise
@@ -29,6 +33,7 @@ import websockets
 
 WS_URL = "wss://stream.binance.us:9443/stream?streams="
 REST_URL = "https://api.binance.us/api/v3/historicalTrades"
+AGG_URL = "https://api.binance.us/api/v3/aggTrades"
 REST_PAGE = 1000  # max trades per REST call
 
 
@@ -75,15 +80,26 @@ async def record_live(symbols, minutes, out):
     return trades
 
 
-def fetch_history(symbols, count, out, skip=0):
+def first_trade_id_at(symbol, start_ms):
+    """The id of the first trade at or after `start_ms`. historicalTrades can only page by id,
+    but aggTrades can search by time, and each aggregate trade records its first trade id."""
+    with urllib.request.urlopen(f"{AGG_URL}?symbol={symbol}&startTime={start_ms}&limit=1", timeout=20) as r:
+        return json.load(r)[0]["f"]
+
+
+def fetch_history(symbols, count, out, skip=0, start_ms=None, end_ms=None):
     trades = []
     for symbol in symbols:
         symbol = symbol.upper()
-        # the newest trade id, then walk backwards one page at a time
-        with urllib.request.urlopen(f"{REST_URL}?symbol={symbol}&limit=1", timeout=20) as r:
-            newest = json.load(r)[0]["id"]
-        newest -= skip  # --skip lets you fetch an older stretch, e.g. as a hold-out set
-        from_id = max(0, newest - count + 1)
+        if start_ms is not None:
+            # a time window: from the first trade at start_ms until a trade passes end_ms
+            from_id, newest = first_trade_id_at(symbol, start_ms), float("inf")
+        else:
+            # the newest trade id, then walk backwards one page at a time
+            with urllib.request.urlopen(f"{REST_URL}?symbol={symbol}&limit=1", timeout=20) as r:
+                newest = json.load(r)[0]["id"]
+            newest -= skip  # --skip lets you fetch an older stretch, e.g. as a hold-out set
+            from_id = max(0, newest - count + 1)
         fetched = []
         while from_id <= newest:
             url = f"{REST_URL}?symbol={symbol}&limit={REST_PAGE}&fromId={from_id}"
@@ -91,7 +107,13 @@ def fetch_history(symbols, count, out, skip=0):
                 page = json.load(r)
             if not page:
                 break
-            fetched.extend(page)
+            if end_ms is not None:
+                page = [x for x in page if x["time"] <= end_ms]
+                fetched.extend(page)
+                if not page or page[-1]["time"] >= end_ms or len(page) < REST_PAGE:
+                    break
+            else:
+                fetched.extend(page)
             from_id = page[-1]["id"] + 1
             time.sleep(1.5)  # stay well under the REST weight limit
         print(f"{symbol}: fetched {len(fetched)} trades")
@@ -114,6 +136,8 @@ def main():
     parser.add_argument("--minutes", type=float, default=30, help="live mode: how long to record")
     parser.add_argument("--count", type=int, default=10000, help="history mode: trades per symbol")
     parser.add_argument("--skip", type=int, default=0, help="history mode: skip this many newest trades")
+    parser.add_argument("--start", help="history mode: UTC start, e.g. 2025-10-10T20:00 (instead of --count)")
+    parser.add_argument("--end", help="history mode: UTC end, e.g. 2025-10-11T00:00")
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
 
@@ -122,7 +146,12 @@ def main():
     if args.mode == "live":
         trades = asyncio.run(record_live(symbols, args.minutes, args.out))
     else:
-        trades = fetch_history(symbols, args.count, args.out, args.skip)
+        def utc_ms(text):
+            return int(datetime.fromisoformat(text).replace(tzinfo=timezone.utc).timestamp() * 1000)
+
+        start_ms = utc_ms(args.start) if args.start else None
+        end_ms = utc_ms(args.end) if args.end else None
+        trades = fetch_history(symbols, args.count, args.out, args.skip, start_ms, end_ms)
 
     print(f"Wrote {len(trades)} trades to {args.out}")
     for symbol, r in check_ids(trades).items():
