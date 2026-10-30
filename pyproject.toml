@@ -1,0 +1,10 @@
+[tool.ruff]
+line-length = 120
+extend-exclude = ["venv"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "B"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["integration: needs Docker (starts a throwaway Postgres container with Testcontainers)"]

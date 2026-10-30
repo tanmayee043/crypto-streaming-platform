@@ -5,3 +5,11 @@ env/
 .env
 __pycache__/
 *.pyc
+.pytest_cache/
+.ruff_cache/
+
+# crash test logs and results
+results/
+
+# Personal notes (guide, resume drafts): kept locally, never pushed
+notes/
