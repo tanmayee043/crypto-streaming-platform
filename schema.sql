@@ -1,14 +1,30 @@
+-- Full current schema, used for fresh databases (docker compose runs it on a new volume).
+-- Existing databases: apply the files in migrations/ in order instead.
+
 CREATE TABLE IF NOT EXISTS trades (
     id BIGSERIAL PRIMARY KEY,
     symbol TEXT NOT NULL,
     trade_id BIGINT NOT NULL,
     trade_time TIMESTAMPTZ NOT NULL,
-    price DOUBLE PRECISION NOT NULL,
-    quantity DOUBLE PRECISION NOT NULL,
-    price_z DOUBLE PRECISION,
-    volume_z DOUBLE PRECISION,
+    price NUMERIC(20, 8) NOT NULL,       -- exact decimals: money is never a float
+    quantity NUMERIC(20, 8) NOT NULL,
+    price_z DOUBLE PRECISION,            -- robust z-score of the log return (NULL while warming up)
+    volume_z DOUBLE PRECISION,           -- v1 model only; new rows use size_ratio
+    size_ratio DOUBLE PRECISION,         -- trade size / median size of the window
     is_anomaly BOOLEAN NOT NULL DEFAULT FALSE,
     anomaly_type TEXT,
+    received_at TIMESTAMPTZ,             -- when our producer received the trade (our clock)
+    stored_at TIMESTAMPTZ,               -- when the storage consumer wrote it (same clock)
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     UNIQUE (symbol, trade_id)
+);
+
+-- Missing trade-ID ranges found by gap_checker.py
+CREATE TABLE IF NOT EXISTS trade_gaps (
+    symbol TEXT NOT NULL,
+    first_missing_id BIGINT NOT NULL,
+    last_missing_id BIGINT NOT NULL,
+    detected_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    resolved_at TIMESTAMPTZ,             -- set once the missing trades have been filled in
+    PRIMARY KEY (symbol, first_missing_id)
 );
