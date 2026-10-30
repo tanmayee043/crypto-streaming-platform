@@ -10,3 +10,6 @@ __pycache__/
 
 # crash test logs and results
 results/
+
+# Personal notes (guide, resume drafts): kept locally, never pushed
+notes/
