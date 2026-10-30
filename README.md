@@ -2,76 +2,100 @@
 
 [![CI](https://github.com/tanmayee043/crypto-streaming-platform/actions/workflows/ci.yml/badge.svg)](https://github.com/tanmayee043/crypto-streaming-platform/actions/workflows/ci.yml)
 
-A real-time pipeline that streams live crypto trades from Binance.US through Kafka, flags unusual price and volume activity with a rolling z-score, stores every trade in PostgreSQL exactly once, and shows it all on a live dashboard.
+A real-time pipeline that streams live crypto trades from Binance.US through Kafka, flags unusual price moves and unusually large trades per symbol, stores every trade in PostgreSQL exactly once, and measures its own completeness against the exchange's trade IDs.
 
 **[Demo video coming soon]**
 
 ## Highlights
 
-- **No lost or duplicated trades, proven:** the storage consumer was hard-killed 100 times while trades were flowing, and all 126,123 trades still ended up in Postgres, with 0 missing and 0 duplicates.
-- **Found and fixed a silent data-loss bug:** the original consumer lost 67% of trades during a single Postgres restart. The fix brings that to 0.
-- **Low latency:** p50 ≈ 32 ms and p95 ≈ 40 ms from receiving a trade to writing it to Postgres, on the live feed.
-- **Independent services:** ingestion, detection, storage and API talk only through Kafka, so any one of them can restart without taking down the others.
+- **No lost or duplicated trades, proven end to end:** the storage consumer and the anomaly detector were each hard-killed 100 times while trades were flowing. 0 missing, 0 duplicates, and every anomaly score matched an uninterrupted run.
+- **Fewer false alarms, more real anomalies caught:** on 60,000 real trades the new model flags 2.9% of trades instead of 4.6%, and catches 95% of planted price spikes instead of 72%. The gains hold on a separate 60,000-trade hold-out set.
+- **Completeness you can measure:** Binance trade IDs are sequential per symbol, so a gap checker reports exactly which trades are missing and the % captured.
+- **Found and fixed silent data loss:** the original storage consumer lost 67% of trades during a single Postgres restart. Now 0.
+- **Replayable:** recorded real trades can be replayed at 10×/100×/1000× or at a fixed rate for repeatable tests and load tests (~3,400 trades/s on a laptop).
 
 ## Architecture
 
 ```
-Binance.US WebSocket (live trades)
+Binance.US WebSocket (live trades, several symbols)
         │
         ▼
-producer.py ──► Kafka: crypto-trades
+producer.py ──► Kafka: crypto-trades   (key = symbol, 3 partitions)
                         │
                         ▼
-              anomaly_detector.py   (rolling 30-trade window, z-score on price and quantity)
+              anomaly_detector.py   per-symbol windows, rebuilt from Kafka on restart;
+                        │           manual offset commits after results are published
+                        ▼
+                Kafka: trade-analytics (key = symbol)        bad messages ──► *-dlq topics
                         │
                         ▼
-                Kafka: trade-analytics
-                        │
-                        ▼
-              storage_consumer.py   (batched upserts, manual offset commits)
+              storage_consumer.py   batched upserts, manual offset commits
                         │
                         ▼
                    PostgreSQL ──► FastAPI (main.py) ──► live dashboard (Chart.js)
+                        ▲
+                 gap_checker.py     missing trade IDs → trade_gaps table, completeness %
 ```
 
 ## Delivery guarantee
 
-**Every trade on `trade-analytics` is stored exactly once, even if the storage consumer crashes at any moment.** This uses at-least-once delivery plus idempotent writes:
+**Every trade the producer publishes is stored exactly once and scored exactly as if nothing had crashed.** Both consumers use at-least-once delivery plus idempotent writes:
 
-1. Read a batch of up to 500 messages from Kafka.
-2. Upsert the batch into Postgres in one transaction (`ON CONFLICT (symbol, trade_id) DO UPDATE`). If it fails, retry the same batch, reconnecting if needed.
+1. Read a batch from Kafka.
+2. Do the work and make it durable: the detector publishes its results and waits for Kafka to acknowledge them; the storage consumer upserts the batch into Postgres in one transaction (`ON CONFLICT (symbol, trade_id) DO UPDATE`).
 3. Only then commit the Kafka offsets.
 
-A crash before step 3 means Kafka redelivers the batch. The upsert turns those repeats into no-op updates instead of duplicate rows.
+A crash before step 3 means the batch is processed again, and the upsert turns repeats into no-op updates. The detector also **rebuilds each symbol's window** from the last messages in Kafka when it starts, so a reprocessed trade gets exactly the score it got the first time, and there is no cold-start blind spot.
 
-**Proof:** [`scripts/crash_test.py`](scripts/crash_test.py) streams 2,000 trades/s into Kafka and hard-kills the real consumer at random moments, then compares Postgres with every trade Kafka acknowledged.
+**Proof:** two crash tests hard-kill the real processes at random moments while trades are flowing, then compare Postgres with every trade sent.
 
-| Hard kills | Kills mid-write | Trades sent | Rows stored | Missing | Duplicates | Redeliveries absorbed |
+| Test | Kills | Trades | Rows stored | Missing | Duplicates | Wrong scores |
 |---|---|---|---|---|---|---|
-| 100 | 52 | 126,123 | 126,123 | **0** | **0** | 2,500 |
+| [Storage consumer](scripts/crash_test.py) (synthetic, 2,000/s) | 100 (52 mid-write) | 126,123 | 126,123 | **0** | **0** | n/a |
+| [Anomaly detector](scripts/detector_crash_test.py) (real trades, 500/s) | 100 (95 mid-batch) | 60,000 | 60,000 | **0** | **0** | **0** |
 
-**The bug this fixed:** the consumer originally used Kafka's auto-commit, which commits offsets on a timer whether or not the write succeeded, and it logged and skipped failed inserts. In a test with one Postgres restart, it lost 2,066 of 3,070 trades. The fixed consumer lost none.
+**The bug this fixed:** both consumers originally relied on Kafka's auto-commit, which commits offsets on a timer whether or not the work succeeded. In a test with one Postgres restart, the original storage consumer lost 2,066 of 3,070 trades; the fixed one lost none. The original detector also never published the first 29 trades after each start, so they never reached the database.
 
-## Metrics (live feed)
+## Anomaly model
 
-Measured over a ~30-minute run on Binance.US BTC/USDT:
+Each trade is compared with the previous 100 trades **of the same symbol**, never including itself:
 
-| Metric | Value |
-|---|---|
-| Throughput | ~1.15 trades/s sustained, ~3 trades/s peak |
-| End-to-end latency (receipt → Postgres) | p50 ≈ 32 ms, p95 ≈ 40 ms |
-| Anomaly rate | 91 of 1,525 trades ≈ 6.0% (threshold 3σ) |
+- **Price anomaly:** the log return `ln(price / previous price)` is more than 6 robust standard deviations from the window's median. Log returns make a move mean the same at any price level; the median, with a scale floor that resists lumpy trade data, keeps one big move from hiding the next.
+- **Volume anomaly:** the trade is at least 50× the median trade size of the window.
 
-Latency is measured on one clock (the producer stamps each trade on receipt), so clock skew against Binance's servers doesn't distort it.
+Evaluated with [`scripts/evaluate_model.py`](scripts/evaluate_model.py) on real Binance.US trades (BTC, ETH, SOL), with 1,200 clearly abnormal trades planted to measure detection:
+
+| Data | Model | Trades flagged | Price spikes caught | Size spikes caught |
+|---|---|---|---|---|
+| 60,000 recent trades | v1: raw values, mean/stdev, 30 trades | 4.63% | 72.2% | 94.7% |
+| | **v2: current** | **2.89%** | **95.2%** | **97.0%** |
+| 60,000 older trades (hold-out) | v1 | 4.31% | 80.0% | 94.2% |
+| | **v2** | **1.55%** | **90.7%** | **97.0%** |
+
+## Completeness
+
+Binance trade IDs are sequential per symbol. That was checked first: 120,000 trades over REST and a 20-minute live WebSocket recording of 6 symbols had no gaps. So any missing ID in the database is a trade the pipeline lost, at any stage. `gap_checker.py` records each missing range in `trade_gaps` (and marks it resolved once filled), and `GET /completeness` reports the % captured per symbol.
+
+## Performance
+
+[`scripts/load_test.py`](scripts/load_test.py) replays 60,000 real trades through the detector and storage consumer and measures latency from receipt to Postgres (one clock, no skew):
+
+| Load | Throughput | Latency p50 | Latency p95 |
+|---|---|---|---|
+| Live feed (~1 trade/s, 30-min run, before Week 2) | ~1.15 trades/s | 32 ms | 40 ms |
+| Steady 1,000 trades/s (5 runs) | 1,000 trades/s | 15–200 ms | 75–280 ms |
+| As fast as possible | ~3,400 trades/s | backlog | backlog |
+
+The bottleneck at full speed is the detector (two medians over 100 values per trade in pure Python); more partitions with more detector instances would scale it. Why the 1,000 trades/s latency varies between runs is still being investigated.
 
 ## Tech stack
 
 | Layer | Technology |
 |---|---|
 | Ingestion | Python, `websockets`, Binance.US public API |
-| Messaging | Apache Kafka 4.3 (KRaft, no Zookeeper), `confluent-kafka` |
-| Stream processing | Plain Python (count-based sliding window, z-score) |
-| Storage | PostgreSQL 16, `psycopg2` |
+| Messaging | Apache Kafka 4.3 (KRaft), `confluent-kafka`, dead-letter topics |
+| Stream processing | Plain Python (per-symbol windows, robust z-score) |
+| Storage | PostgreSQL 16 (`NUMERIC` prices), `psycopg2` |
 | API and dashboard | FastAPI, HTML/JS with Chart.js |
 | Testing and CI | pytest, Testcontainers, ruff, GitHub Actions |
 | Infrastructure | Docker Compose (pinned image versions) |
@@ -90,11 +114,15 @@ copy .env.example .env             # Mac/Linux: cp; then set your own password
 docker compose up -d --wait
 ```
 
-The `trades` table is created from `schema.sql` the first time the Postgres volume starts. For an existing volume, load it by hand with `Get-Content schema.sql | docker exec -i postgres psql -U crypto -d crypto_db` (PowerShell). Create the Kafka topics once:
+A fresh Postgres volume gets the full schema from `schema.sql`. An existing database needs the files in `migrations/` applied in order, e.g. `Get-Content migrations\001_numeric_prices_and_timestamps.sql | docker exec -i postgres psql -U crypto -d crypto_db` (PowerShell).
+
+Create the Kafka topics once (3 partitions, keyed by symbol):
 
 ```bash
-docker exec kafka /opt/kafka/bin/kafka-topics.sh --create --topic crypto-trades --bootstrap-server localhost:9092 --partitions 1 --replication-factor 1
-docker exec kafka /opt/kafka/bin/kafka-topics.sh --create --topic trade-analytics --bootstrap-server localhost:9092 --partitions 1 --replication-factor 1
+docker exec kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --create --topic crypto-trades --partitions 3
+docker exec kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --create --topic trade-analytics --partitions 3
+docker exec kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --create --topic crypto-trades-dlq --partitions 3
+docker exec kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --create --topic trade-analytics-dlq --partitions 3
 ```
 
 Run each service in its own terminal:
@@ -103,10 +131,18 @@ Run each service in its own terminal:
 python producer.py
 python anomaly_detector.py
 python storage_consumer.py
+python gap_checker.py
 uvicorn main:app --reload
 ```
 
-Then open the dashboard at `http://localhost:8000/dashboard/`, the API docs at `http://localhost:8000/docs`, or Kafka UI at `http://localhost:8080`.
+Then open the dashboard at `http://localhost:8000/dashboard/`, completeness at `http://localhost:8000/completeness`, the API docs at `http://localhost:8000/docs`, or Kafka UI at `http://localhost:8080`.
+
+### Replaying recorded trades
+
+```bash
+python scripts/record_trades.py history --symbols BTCUSDT,ETHUSDT,SOLUSDT --count 20000 --out data/history.jsonl
+python scripts/replay.py data/history.jsonl --speed 100        # 100x real time; also --rate 1000, or --speed 0 for max
+```
 
 ### Configuration
 
@@ -117,49 +153,56 @@ All settings come from environment variables (or `.env`). See [`.env.example`](.
 | `KAFKA_BOOTSTRAP_SERVERS` | `localhost:9092` | Kafka address |
 | `POSTGRES_HOST` / `POSTGRES_PORT` | `localhost` / `5432` | Postgres address |
 | `POSTGRES_DB` / `POSTGRES_USER` / `POSTGRES_PASSWORD` | (required) | Postgres credentials |
-| `SYMBOL` | `btcusdt` | Trading pair to stream |
+| `SYMBOLS` | `btcusdt` | Comma-separated pairs to stream |
+| `WINDOW_SIZE` | `100` | Trades per symbol in the detector's window |
+| `PRICE_Z_THRESHOLD` / `SIZE_RATIO_THRESHOLD` | `6.0` / `50` | Anomaly thresholds |
 | `STORAGE_BATCH_SIZE` | `500` | Max trades per database transaction |
 
 ## Testing
 
 ```bash
 pip install -r requirements-dev.txt
-ruff check .                              # lint
-pytest                                    # unit + integration tests (integration needs Docker)
-python scripts/crash_test.py --kills 100  # needs docker compose up first
+ruff check .                                      # lint
+pytest                                            # unit + integration tests (integration needs Docker)
+python scripts/crash_test.py --kills 100          # storage consumer crash test (needs docker compose up)
+python scripts/detector_crash_test.py --kills 100 # detector crash test (needs data/history-60k.jsonl)
+python scripts/evaluate_model.py data/history-60k.jsonl
+python scripts/load_test.py --rate 1000
 ```
 
-- **Unit tests** cover the z-score and anomaly classification, and the storage consumer's write-then-commit logic using a fake Kafka consumer.
-- **Integration tests** run the real upsert against a throwaway Postgres container (Testcontainers).
-- **CI** runs lint, the tests and a 20-kill crash test on every push and pull request.
+- **Unit tests** cover the anomaly model (log returns, robust z-score, size ratio, current trade excluded), per-symbol state, both consumers' "make it durable, then commit" order, dead-lettering, and the replay and recording helpers.
+- **Integration tests** run against a throwaway Postgres container (Testcontainers): exact `NUMERIC` prices, idempotent upserts, all-or-nothing batches, reconnects, and the gap checker.
+- **CI** runs lint, the tests, a 20-kill storage crash test and a 10-kill detector crash test on every push and pull request.
 
 ## Project structure
 
 ```
-producer.py            Binance.US WebSocket → Kafka, reconnects with exponential backoff
-anomaly_detector.py    crypto-trades → z-score anomaly detection → trade-analytics
-storage_consumer.py    trade-analytics → Postgres (batched upserts, manual offset commits)
-main.py                FastAPI: /trades, /anomalies, /anomalies/count, /dashboard
-schema.sql             trades table, unique on (symbol, trade_id)
-static/index.html      live dashboard
-scripts/crash_test.py  delivery-guarantee crash test
-tests/                 unit and integration tests
+producer.py              Binance.US WebSocket → Kafka, keyed by symbol, reconnects with backoff
+anomaly_detector.py      crypto-trades → per-symbol anomaly model → trade-analytics
+storage_consumer.py      trade-analytics → Postgres (batched upserts, manual offset commits)
+gap_checker.py           missing trade IDs and completeness %
+kafka_helpers.py         offset, batching and dead-letter helpers shared by both consumers
+main.py                  FastAPI: /trades, /anomalies, /anomalies/count, /completeness, /dashboard
+schema.sql, migrations/  database schema and upgrades for existing databases
+static/index.html        live dashboard
+scripts/                 recording, replay, model evaluation, crash tests, load test
+tests/                   unit and integration tests, sample trade file
 ```
 
 ## Design decisions and limitations
 
-- **Count-based window.** Binance.US trades too irregularly for a fixed time window to fill reliably, so the detector uses the last 30 trades, however long that takes. The window's time span varies as a result.
-- **Cold start.** Nothing is flagged until the window has 30 trades. Rebuilding the window from Kafka history on restart would remove this blind spot.
-- **The detector still auto-commits.** The delivery fix covers the storage consumer. A detector crash can still drop a few trades between the two topics; fixing it is next.
-- **Prices are `DOUBLE PRECISION`.** Fine for anomaly scoring, but money should be stored as `NUMERIC`.
-- **Malformed messages are logged and skipped** so one bad message can't block a partition. A dead-letter topic would keep them for inspection.
-- **Polling dashboard.** The dashboard polls every 3 seconds. Server-Sent Events would push updates instead.
-- **Kafka data is not on a named volume**, so `docker compose down -v` wipes the topics.
+- **Hash partitioning with few symbols is uneven.** With `btcusdt,ethusdt,solusdt,xrpusdt`, BTC and ETH share partition 0, so one detector instance per partition wouldn't be perfectly balanced.
+- **Window rebuild reads the last 2,000 messages per partition.** That is exact while each symbol had at least 101 trades in those messages; a very rare symbol sharing a partition with busy ones could restart with a partly filled window.
+- **Masking in degenerate windows.** When more than half of a window is identical, one huge outlier can still raise the scale enough to hide the next anomaly.
+- **Thresholds were tuned on historical data** (checked on a hold-out set). They should be re-checked periodically as market conditions change.
+- **Dead letters are kept but not yet shown** anywhere. They're readable in Kafka UI.
+- **Gaps are reported, not yet repaired.** Backfilling missing trades from the exchange's REST API is planned for the Lakehouse project.
+- **Kafka data is not on a named volume**, so recreating the Kafka container wipes the topics.
+- **Polling dashboard** (every 3 s), showing one symbol (`BTCUSDT`).
 
 ## Roadmap
 
-- Apply the same delivery guarantee to the anomaly detector, and rebuild its window on restart
-- Trade-ID gap checker to measure completeness against the exchange's own sequence numbers
-- Robust anomaly model (log returns, median/MAD z-score)
-- Replay harness for recorded trades, Server-Sent Events dashboard, Prometheus and Grafana
-- 24/7 deployment
+- Server-Sent Events dashboard with anomaly detail drawer, replay mode and pipeline health strip
+- Prometheus metrics and Grafana (per-stage latency, consumer lag, completeness)
+- 24/7 deployment with external uptime monitoring
+- Automatic backfill of gaps from the exchange's REST API
