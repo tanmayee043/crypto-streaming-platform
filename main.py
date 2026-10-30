@@ -10,7 +10,7 @@ app = FastAPI()
 
 def get_conn():
     return psycopg2.connect(
-        host="localhost",
+        host=os.getenv("POSTGRES_HOST", "localhost"),
         port=int(os.environ["POSTGRES_PORT"]),
         dbname=os.environ["POSTGRES_DB"],
         user=os.environ["POSTGRES_USER"],

@@ -7,15 +7,19 @@ import websockets
 import logging
 import time
 
+import os
+from dotenv import load_dotenv
+load_dotenv()
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s"
 )
 log = logging.getLogger("producer")
 
-KAFKA_BOOTSTRAP_SERVERS = "localhost:9092"
-TOPIC = "crypto-trades"
-SYMBOL = "btcusdt"
+KAFKA_BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
+TOPIC = os.getenv("TRADES_TOPIC", "crypto-trades")
+SYMBOL = os.getenv("SYMBOL", "btcusdt")
 URL = f"wss://stream.binance.us:9443/ws/{SYMBOL}@trade"
 
 MAX_BACKOFF_SECONDS = 60
@@ -41,7 +45,7 @@ def delivery_report(err,msg):
     if err:
         print(f"Deliver failed: {err}")
 
-    
+
 async def stream_trades():
     global trade_count
     async with websockets.connect(URL) as ws:
