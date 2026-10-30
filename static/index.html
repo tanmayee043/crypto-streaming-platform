@@ -1128,6 +1128,10 @@
     async function init() {
         applyTheme(store.get('theme'));
         renderAlertsButton();
+        // Chart.js caches how wide each axis label is. If it draws before the web font arrives it
+        // remembers the fallback font's narrower widths and later clips the labels, so wait for
+        // the font first (but never more than 2 s, so a blocked font can't stop the page).
+        await Promise.race([document.fonts?.load('11px "IBM Plex Mono"'), new Promise((r) => setTimeout(r, 2000))]);
         try {
             const symbols = await getJSON('/symbols');
             state.liveSymbols = symbols.map((s) => s.symbol);
@@ -1141,8 +1145,6 @@
         startLive();
     }
     window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => applyTheme());
-    // charts measure their labels when drawn; redraw once the web fonts have arrived
-    document.fonts?.ready.then(() => { priceChart.resize(); priceChart.update('none'); });
     init();
     </script>
 </body>
