@@ -32,6 +32,7 @@ import threading
 import time
 from collections import Counter
 from dataclasses import asdict, dataclass
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -80,24 +81,24 @@ class KillRecord:
 # --------------------------------------------------------------------------- setup
 
 
-def setup_database(settings: Settings) -> None:
+def setup_database(settings: Settings, db_name: str = DB_NAME) -> None:
     admin = psycopg2.connect(**settings.postgres_connect_kwargs())
     admin.autocommit = True
     with admin.cursor() as cur:
-        cur.execute(f"DROP DATABASE IF EXISTS {DB_NAME} WITH (FORCE)")
-        cur.execute(f"CREATE DATABASE {DB_NAME}")
+        cur.execute(f"DROP DATABASE IF EXISTS {db_name} WITH (FORCE)")
+        cur.execute(f"CREATE DATABASE {db_name}")
     admin.close()
-    conn = psycopg2.connect(**{**settings.postgres_connect_kwargs(), "dbname": DB_NAME})
+    conn = psycopg2.connect(**{**settings.postgres_connect_kwargs(), "dbname": db_name})
     with conn, conn.cursor() as cur:
         cur.execute((ROOT / "schema.sql").read_text())
     conn.close()
 
 
-def drop_database(settings: Settings) -> None:
+def drop_database(settings: Settings, db_name: str = DB_NAME) -> None:
     admin = psycopg2.connect(**settings.postgres_connect_kwargs())
     admin.autocommit = True
     with admin.cursor() as cur:
-        cur.execute(f"DROP DATABASE IF EXISTS {DB_NAME} WITH (FORCE)")
+        cur.execute(f"DROP DATABASE IF EXISTS {db_name} WITH (FORCE)")
     admin.close()
 
 
@@ -212,10 +213,12 @@ def consumer_env(settings: Settings, topic: str, group: str, batch_size: int) ->
     return env
 
 
-def start_consumer(env: dict[str, str], log_path: Path) -> subprocess.Popen[bytes]:
+def start_consumer(
+    env: dict[str, str], log_path: Path, script: str = "storage_consumer.py"
+) -> subprocess.Popen[bytes]:
     log_file = log_path.open("wb")
     return subprocess.Popen(
-        [sys.executable, "storage_consumer.py"],
+        [sys.executable, script],
         cwd=ROOT,
         env=env,
         stdout=log_file,
@@ -291,7 +294,11 @@ def verify(settings: Settings, feed: TradeFeed) -> dict[str, Any]:
     stored = {(s, t): (p, q) for s, t, p, q in rows}
     missing = feed.acked - stored.keys()
     unexpected = stored.keys() - feed.acked
-    mismatched = [k for k in feed.acked & stored.keys() if stored[k] != feed.sent[k]]
+    # prices are stored as exact NUMERIC, so compare against the exact decimal that was sent
+    mismatched = [
+        k for k in feed.acked & stored.keys()
+        if stored[k] != tuple(Decimal(str(v)) for v in feed.sent[k])
+    ]
     return {
         "trades_acknowledged_by_kafka": len(feed.acked),
         "trades_failed_to_produce": feed.failed,

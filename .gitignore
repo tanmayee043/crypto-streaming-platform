@@ -13,3 +13,6 @@ results/
 
 # Personal notes (guide, resume drafts): kept locally, never pushed
 notes/
+
+# recorded trade files (see scripts/record_trades.py)
+/data/

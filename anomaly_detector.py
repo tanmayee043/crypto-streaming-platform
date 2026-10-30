@@ -1,7 +1,8 @@
 import json
+import math
 import statistics
 from collections import deque
-from confluent_kafka import Consumer, Producer
+from confluent_kafka import Consumer, KafkaException, Producer, TopicPartition
 
 import logging
 import time
@@ -10,43 +11,141 @@ import os
 from dotenv import load_dotenv
 load_dotenv()
 
+from kafka_helpers import consume_batch, next_offsets, send_to_dead_letter  # noqa: E402
+
 logging.basicConfig(
-    level=logging.INFO,
+    level=os.getenv("LOG_LEVEL", "INFO"),
     format="%(asctime)s [%(levelname)s] %(message)s"
 )
 log = logging.getLogger("anomaly_detector")
 
 KAFKA_BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
 INPUT_TOPIC = os.getenv("TRADES_TOPIC", "crypto-trades")
-WINDOW_SIZE = 30
-Z_SCORE_THRESHOLD = 3.0      # max z-score how many std devs away counts as "unusual"
-
 OUTPUT_TOPIC = os.getenv("ANALYTICS_TOPIC", "trade-analytics")
+DEAD_LETTER_TOPIC = os.getenv("TRADES_DLQ_TOPIC", "crypto-trades-dlq")
+GROUP_ID = os.getenv("DETECTOR_GROUP_ID", "crypto-anomaly-detector")
+# optional Kafka "static membership": a restarted detector gets its partitions back at once
+GROUP_INSTANCE_ID = os.getenv("DETECTOR_GROUP_INSTANCE_ID")
 
-METRICS_INTERVAL_SECONDS = 60
+BATCH_SIZE = int(os.getenv("DETECTOR_BATCH_SIZE", "500"))
+BATCH_TIMEOUT_SECONDS = 1.0
+FLUSH_TIMEOUT_SECONDS = 30
 
-def producer_delivery_report(err, msg):
-    if err:
-        print(f"Delivery failed: {err}")
+WINDOW_SIZE = int(os.getenv("WINDOW_SIZE", "100"))
+# Thresholds chosen with scripts/evaluate_model.py on 60k real Binance.US trades (see README)
+PRICE_Z_THRESHOLD = float(os.getenv("PRICE_Z_THRESHOLD", "6.0"))
+SIZE_RATIO_THRESHOLD = float(os.getenv("SIZE_RATIO_THRESHOLD", "50"))
+# how many messages per partition to re-read on startup to rebuild the windows
+REBUILD_LOOKBACK = int(os.getenv("REBUILD_LOOKBACK", "2000"))
 
-# fixed-size window: deque with maxlen automatically drops the oldest entry
-window = deque(maxlen = WINDOW_SIZE)
+METRICS_INTERVAL_SECONDS = float(os.getenv("METRICS_INTERVAL_SECONDS", "60"))
 
-def z_score(value, values):
-    mean = statistics.mean(values)
-    stdev = statistics.pstdev(values)  # population stdev — we have the whole window, not a sample
-    if stdev == 0:
+# --- the anomaly model ---
+#
+# For each symbol we keep the last WINDOW_SIZE log returns, ln(price / previous price), and
+# the last WINDOW_SIZE trade sizes. A new trade is scored against the window BEFORE it is
+# added, so a spike can't hide by inflating its own baseline.
+#
+# Price: a robust z-score of the log return.
+# - Log returns instead of raw prices: a $50 move means the same at $30k or $100k BTC, and
+#   returns don't trend the way prices do.
+# - Median/MAD instead of mean/stdev: one big move drags the mean and inflates the stdev,
+#   which hides the next anomaly. The median and MAD barely move.
+# - Scale floor: real trade data is lumpy (one order filling several resting orders gives
+#   runs of identical prices), which can shrink the MAD to almost nothing and make ordinary
+#   moves look extreme. Using the larger of the MAD and the mean absolute deviation stops that.
+#
+# Size: how many times bigger the trade is than the median trade of the window. Trade sizes
+# are so skewed (the 99th percentile is ~50x the median) that a ratio to the median is both
+# more reliable and easier to explain than a z-score.
+
+MAD_TO_STDEV = 1 / 0.6745     # makes the MAD comparable to a standard deviation
+MEAN_AD_TO_STDEV = 1.2533     # same, for the mean absolute deviation
+
+
+def robust_z(value, values):
+    """How far `value` is from the window's median, in robust standard deviations."""
+    median = statistics.median(values)
+    deviations = [abs(v - median) for v in values]
+    scale = max(MAD_TO_STDEV * statistics.median(deviations),
+                MEAN_AD_TO_STDEV * statistics.mean(deviations))
+    if scale == 0:
         return 0.0
-    return (value - mean) / stdev      # z-score
+    return (value - median) / scale
 
-def classify_anomaly(price_z, vol_z):
-    if abs(price_z) > Z_SCORE_THRESHOLD and abs(vol_z) > Z_SCORE_THRESHOLD:
+
+def new_window():
+    return {
+        "last_price": None,
+        "returns": deque(maxlen=WINDOW_SIZE),
+        "sizes": deque(maxlen=WINDOW_SIZE),
+    }
+
+
+def score_trade(window, price, quantity):
+    """Score a trade against its symbol's window, then add it to the window.
+    Returns (price_z, size_ratio); each is None until there are WINDOW_SIZE earlier values."""
+    if price <= 0 or quantity <= 0:
+        raise ValueError(f"price and quantity must be positive, got {price} / {quantity}")
+    log_return = math.log(price / window["last_price"]) if window["last_price"] else None
+
+    price_z = None
+    if log_return is not None and len(window["returns"]) == WINDOW_SIZE:
+        price_z = robust_z(log_return, window["returns"])
+    size_ratio = None
+    if len(window["sizes"]) == WINDOW_SIZE:
+        size_ratio = quantity / statistics.median(window["sizes"])
+
+    if log_return is not None:
+        window["returns"].append(log_return)
+    window["sizes"].append(quantity)
+    window["last_price"] = price
+    return price_z, size_ratio
+
+
+def classify_anomaly(price_z, size_ratio, price_threshold=PRICE_Z_THRESHOLD,
+                     size_threshold=SIZE_RATIO_THRESHOLD):
+    price_hit = price_z is not None and abs(price_z) > price_threshold
+    size_hit = size_ratio is not None and size_ratio >= size_threshold
+    if price_hit and size_hit:
         return "both"
-    elif abs(price_z) > Z_SCORE_THRESHOLD:
+    elif price_hit:
         return "price"
-    elif abs(vol_z) > Z_SCORE_THRESHOLD:
+    elif size_hit:
         return "volume"
     return None
+
+
+# --- per-symbol state ---
+# Trades are keyed by symbol, so every trade of a symbol lands on the same partition, in
+# order. That lets each symbol keep its own window, and lets us rebuild it from Kafka.
+windows = {}        # symbol -> window
+partition_of = {}   # symbol -> partition it arrives on
+
+
+def update_window(trade, partition):
+    symbol = trade["s"]
+    if symbol not in windows:
+        windows[symbol] = new_window()
+        partition_of[symbol] = partition
+    return score_trade(windows[symbol], float(trade["p"]), float(trade["q"]))
+
+
+def build_result(trade, price_z, size_ratio, anomaly_type):
+    return {
+        "symbol": trade["s"],
+        "trade_id": trade["t"],
+        "trade_time": trade["T"],  # Binance sends epoch milliseconds
+        "received_at": trade.get("received_at"),
+        "price": float(trade["p"]),
+        "quantity": float(trade["q"]),
+        "price_z": price_z,         # None while the symbol's window is warming up
+        "size_ratio": size_ratio,   # trade size / median size of the window
+        "volume_z": None,           # v1 field, no longer computed
+        "is_anomaly": anomaly_type is not None,
+        "anomaly_type": anomaly_type,   # "price" | "volume" | "both" | None
+    }
+
 
 # --- metrics ---
 processed_count = 0
@@ -67,80 +166,171 @@ def maybe_log_metrics():
         anomaly_count = 0
         last_metrics_log = now
 
-def main():
-    global processed_count, anomaly_count
-    consumer = Consumer({
+
+# --- recovery: rebuild the windows from Kafka on startup ---
+
+def rebuild_windows(committed):
+    """Re-read the last REBUILD_LOOKBACK messages before each partition's start position and
+    feed them through the model without publishing anything. Afterwards each symbol's window
+    is exactly what it was before the restart, so there is no cold-start blind spot and a
+    reprocessed trade gets the same scores it got the first time."""
+    reader = Consumer({
         "bootstrap.servers": KAFKA_BOOTSTRAP_SERVERS,
-        "group.id": "crypto-anomaly-detector",
-        "auto.offset.reset": "latest",
+        "group.id": f"{GROUP_ID}-rebuild",  # never commits anything
+        "enable.auto.commit": False,
     })
-    consumer.subscribe([INPUT_TOPIC])
+    try:
+        for tp in committed:
+            for symbol in [s for s, p in partition_of.items() if p == tp.partition]:
+                del windows[symbol], partition_of[symbol]
 
-    producer = Producer({"bootstrap.servers": KAFKA_BOOTSTRAP_SERVERS})
+            low, high = reader.get_watermark_offsets(TopicPartition(tp.topic, tp.partition), timeout=10)
+            start_at = max(tp.offset, low)  # no commit yet (offset < 0): start at the beginning
+            tp.offset = start_at
+            read_from = max(low, start_at - REBUILD_LOOKBACK)
+            if read_from >= start_at:
+                continue
 
-    log.info(f"Watching '{INPUT_TOPIC}' — window={WINDOW_SIZE} trades, threshold={Z_SCORE_THRESHOLD} std dev")
+            reader.assign([TopicPartition(tp.topic, tp.partition, read_from)])
+            replayed = 0
+            done = False
+            while not done:
+                messages = reader.consume(num_messages=BATCH_SIZE, timeout=5)
+                if not messages:
+                    log.warning(f"Rebuild of partition {tp.partition} stopped early at {replayed} trades")
+                    break
+                for msg in messages:
+                    if msg.error():
+                        continue
+                    if msg.offset() >= start_at:
+                        done = True
+                        break
+                    try:
+                        update_window(json.loads(msg.value()), tp.partition)
+                        replayed += 1
+                    except (ValueError, KeyError, TypeError):
+                        pass  # it went to the dead-letter topic the first time round
+                    if msg.offset() == start_at - 1:
+                        done = True
+            log.info(f"Rebuilt windows for partition {tp.partition} from {replayed} trades "
+                     f"(offsets {read_from}-{start_at - 1})")
+    finally:
+        reader.close()
+
+
+def on_assign(consumer, partitions):
+    committed = consumer.committed(partitions, timeout=10)
+    rebuild_windows(committed)
+    consumer.assign(committed)  # start each partition exactly where the rebuild stopped
+
+
+def on_revoke(consumer, partitions):
+    revoked = {tp.partition for tp in partitions}
+    for symbol in [s for s, p in partition_of.items() if p in revoked]:
+        del windows[symbol], partition_of[symbol]
+
+
+# --- the processing loop ---
+
+delivery_errors = []
+
+def on_delivery(err, msg):
+    if err:
+        delivery_errors.append(err)
+        log.error(f"Delivery failed: {err}")
+
+
+def process_batch(consumer, producer, messages):
+    """Score a batch and publish the results, then commit. Same rule as the storage consumer:
+    offsets are only committed once every result is safely in Kafka."""
+    global processed_count, anomaly_count
+    log.debug(f"batch received messages={len(messages)}")
+    valid = []
+    for msg in messages:
+        if msg.error():
+            log.warning(f"Consumer error: {msg.error()}")
+            continue
+        valid.append(msg)
+        try:
+            trade = json.loads(msg.value().decode("utf-8"))
+            price_z, size_ratio = update_window(trade, msg.partition())
+            anomaly_type = classify_anomaly(price_z, size_ratio)
+            result = build_result(trade, price_z, size_ratio, anomaly_type)
+        except (ValueError, KeyError, TypeError) as e:
+            log.error(f"Bad trade at offset {msg.offset()}, sent to '{DEAD_LETTER_TOPIC}': {e}")
+            send_to_dead_letter(producer, DEAD_LETTER_TOPIC, msg, e)
+            continue
+
+        if price_z is not None or size_ratio is not None:
+            processed_count += 1
+        if anomaly_type:
+            anomaly_count += 1
+            log.info(f"🚨 {anomaly_type.upper()} ANOMALY — {trade['s']} price={result['price']}, "
+                     f"qty={result['quantity']}, price_z={price_z}, size_ratio={size_ratio}")
+
+        # Publish the result downstream for storage_consumer.py to persist, keyed by symbol
+        producer.produce(
+            OUTPUT_TOPIC,
+            key=trade["s"].encode("utf-8"),
+            value=json.dumps(result).encode("utf-8"),
+            on_delivery=on_delivery,
+        )
+        producer.poll(0)
+
+    if not valid:
+        return
+
+    # wait until Kafka has acknowledged every result (and dead letter) from this batch
+    if producer.flush(FLUSH_TIMEOUT_SECONDS) > 0 or delivery_errors:
+        # Don't commit. Exiting means the windows are rebuilt and the batch is reprocessed
+        # on restart, instead of carrying on with a window that saw trades we never published.
+        raise RuntimeError("Results were not delivered to Kafka; stopping without committing")
+
+    log.debug(f"batch written results={len(valid)}")
+
+    try:
+        consumer.commit(offsets=next_offsets(valid), asynchronous=False)
+        log.debug("offsets committed")
+    except KafkaException as e:
+        log.warning(f"Offset commit failed, batch will be reprocessed (the upsert absorbs it): {e}")
+
+
+def consumer_config():
+    config = {
+        "bootstrap.servers": KAFKA_BOOTSTRAP_SERVERS,
+        "group.id": GROUP_ID,
+        # a brand-new detector processes everything still in Kafka, so nothing is skipped
+        "auto.offset.reset": "earliest",
+        "enable.auto.commit": False,
+        "enable.auto.offset.store": False,
+    }
+    if GROUP_INSTANCE_ID:
+        config["group.instance.id"] = GROUP_INSTANCE_ID
+    return config
+
+
+def main():
+    consumer = Consumer(consumer_config())
+    consumer.subscribe([INPUT_TOPIC], on_assign=on_assign, on_revoke=on_revoke)
+    # idempotence: Kafka drops duplicates caused by the producer's own retries
+    producer = Producer({"bootstrap.servers": KAFKA_BOOTSTRAP_SERVERS, "enable.idempotence": True})
+
+    log.info(f"Watching '{INPUT_TOPIC}' — window={WINDOW_SIZE} trades per symbol, "
+             f"price z > {PRICE_Z_THRESHOLD}, size >= {SIZE_RATIO_THRESHOLD}x median")
     log.info(f"Publishing results to '{OUTPUT_TOPIC}'")
 
     try:
         while True:
-            msg = consumer.poll(1.0)
-            if msg is None:
-                continue
-            if msg.error():
-                print(f"Consumer error: {msg.error()}")
-                continue
-
-            trade = json.loads(msg.value().decode("utf-8"))
-            price = float(trade["p"])
-            quantity = float(trade["q"])
-
-            window.append((price, quantity))
-
-            if len(window) < WINDOW_SIZE:
-                print(f"Price: {price:.2f}  Qty: {quantity:.5f}  (warming up: {len(window)}/{WINDOW_SIZE})")
-                continue
-
-            prices = [p for p, _ in window]
-            volumes = [q for _, q in window]
-
-            price_z = z_score(price, prices)
-            vol_z = z_score(quantity, volumes)
-
-            anomaly_type = classify_anomaly(price_z, vol_z)
-
-            is_anomaly = anomaly_type is not None
-            processed_count += 1
-            if is_anomaly:
-                anomaly_count += 1
-                log.info(f"🚨 {anomaly_type.upper()} ANOMALY — price={price:.2f}, qty={quantity:.5f}, "
-                          f"price_z={price_z:.2f}, vol_z={vol_z:.2f}")
-
-            # Publish the processed result downstream for storage_consumer.py to persist
-            result = {
-                "symbol": trade["s"],
-                "trade_id": trade["t"],
-                "trade_time": trade["T"],  # Binance sends epoch milliseconds
-                "received_at": trade["received_at"],
-                "price": price,
-                "quantity": quantity,
-                "price_z": price_z,
-                "volume_z": vol_z,
-                "is_anomaly": is_anomaly,
-                "anomaly_type": anomaly_type,   # "price" | "volume" | "both" | None
-            }
-            producer.produce(
-                OUTPUT_TOPIC,
-                value=json.dumps(result).encode("utf-8"),
-                callback=producer_delivery_report,
-            )
-            producer.poll(0)
+            messages = consume_batch(consumer, BATCH_SIZE, BATCH_TIMEOUT_SECONDS)
+            if messages:
+                process_batch(consumer, producer, messages)
             maybe_log_metrics()
 
     except KeyboardInterrupt:
         pass
     finally:
         consumer.close()
-        producer.flush()
+        producer.flush(FLUSH_TIMEOUT_SECONDS)
 
 
 if __name__ == "__main__":

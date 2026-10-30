@@ -19,12 +19,15 @@ log = logging.getLogger("producer")
 
 KAFKA_BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
 TOPIC = os.getenv("TRADES_TOPIC", "crypto-trades")
-SYMBOL = os.getenv("SYMBOL", "btcusdt")
-URL = f"wss://stream.binance.us:9443/ws/{SYMBOL}@trade"
+# comma-separated, e.g. "btcusdt,ethusdt,solusdt" (SYMBOL still works for a single pair)
+SYMBOLS = [s.strip().lower() for s in os.getenv("SYMBOLS", os.getenv("SYMBOL", "btcusdt")).split(",") if s.strip()]
+# one "combined stream" connection carries every symbol; each message is {"stream": ..., "data": trade}
+URL = "wss://stream.binance.us:9443/stream?streams=" + "/".join(f"{s}@trade" for s in SYMBOLS)
 
 MAX_BACKOFF_SECONDS = 60
 
-producer = Producer({"bootstrap.servers": KAFKA_BOOTSTRAP_SERVERS})
+# idempotence: Kafka drops duplicates caused by the producer's own retries
+producer = Producer({"bootstrap.servers": KAFKA_BOOTSTRAP_SERVERS, "enable.idempotence": True})
 #- --- throughput metrics ---- #
 trade_count = 0
 last_metrics_log = time.time()
@@ -46,18 +49,33 @@ def delivery_report(err,msg):
         print(f"Deliver failed: {err}")
 
 
-async def stream_trades():
-    global trade_count
-    async with websockets.connect(URL) as ws:
-        log.info(f"Connected to Binance stream for {SYMBOL}, publishing to Kafka topic '{TOPIC}'")
-        async for message in ws:
-            trade = json.loads(message)
-            trade["received_at"] = time.time() * 1000  # our clock time, ms — added for latency measurement
+def send(trade):
+    # Keyed by symbol: every trade of a symbol goes to the same partition, in order, which
+    # the detector relies on for its per-symbol windows
+    while True:
+        try:
             producer.produce(
                 TOPIC,
+                key=trade["s"].encode("utf-8"),
                 value=json.dumps(trade).encode('utf-8'),
                 callback=delivery_report,
             )
+            return
+        except BufferError:
+            # backpressure: the local send buffer is full (Kafka slow or down), so wait for
+            # some deliveries to finish instead of crashing or dropping the trade
+            log.warning("Producer buffer full, waiting for Kafka to catch up")
+            producer.poll(1)
+
+
+async def stream_trades():
+    global trade_count
+    async with websockets.connect(URL) as ws:
+        log.info(f"Connected to Binance stream for {', '.join(SYMBOLS)}, publishing to Kafka topic '{TOPIC}'")
+        async for message in ws:
+            trade = json.loads(message)["data"]
+            trade["received_at"] = time.time() * 1000  # our clock time, ms — added for latency measurement
+            send(trade)
             producer.poll(0)    # triggers delivery callbacks, non-blocking
             trade_count+=1
             maybe_log_metrics()

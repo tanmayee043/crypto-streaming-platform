@@ -1,8 +1,9 @@
 import json
 import psycopg2
 import psycopg2.extras
-from confluent_kafka import Consumer, KafkaException, TopicPartition
+from confluent_kafka import Consumer, KafkaException, Producer
 from datetime import datetime, timezone
+from decimal import Decimal
 
 import logging
 import time
@@ -10,6 +11,8 @@ import time
 import os
 from dotenv import load_dotenv
 load_dotenv()
+
+from kafka_helpers import consume_batch, next_offsets, send_to_dead_letter  # noqa: E402
 
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO"),
@@ -19,6 +22,7 @@ log = logging.getLogger("storage_consumer")
 
 KAFKA_BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
 TOPIC = os.getenv("ANALYTICS_TOPIC", "trade-analytics")
+DEAD_LETTER_TOPIC = os.getenv("ANALYTICS_DLQ_TOPIC", "trade-analytics-dlq")
 GROUP_ID = os.getenv("STORAGE_GROUP_ID", "storage-writer")
 # optional Kafka "static membership": a restarted consumer gets its partitions back
 # immediately instead of waiting for a group rebalance
@@ -28,7 +32,7 @@ BATCH_SIZE = int(os.getenv("STORAGE_BATCH_SIZE", "500"))
 BATCH_TIMEOUT_SECONDS = float(os.getenv("STORAGE_BATCH_TIMEOUT_SECONDS", "1.0"))
 MAX_RETRY_BACKOFF_SECONDS = 30
 
-METRICS_INTERVAL_SECONDS = 60
+METRICS_INTERVAL_SECONDS = float(os.getenv("METRICS_INTERVAL_SECONDS", "60"))
 
 # Delivery guarantee: offsets are committed only AFTER a batch is safely in Postgres.
 # If we crash before that, Kafka redelivers the batch on restart, and the upsert on
@@ -38,7 +42,8 @@ METRICS_INTERVAL_SECONDS = 60
 # `xmax = 0` is only true for freshly inserted rows, so we can count how many messages
 # were redeliveries that the upsert absorbed.
 UPSERT_SQL = """
-    INSERT INTO trades (symbol, trade_id, trade_time, price, quantity, price_z, volume_z, is_anomaly, anomaly_type)
+    INSERT INTO trades (symbol, trade_id, trade_time, price, quantity, price_z, volume_z, is_anomaly, anomaly_type,
+                        size_ratio, received_at, stored_at)
     VALUES %s
     ON CONFLICT (symbol, trade_id) DO UPDATE SET
         trade_time = EXCLUDED.trade_time,
@@ -47,7 +52,11 @@ UPSERT_SQL = """
         price_z = EXCLUDED.price_z,
         volume_z = EXCLUDED.volume_z,
         is_anomaly = EXCLUDED.is_anomaly,
-        anomaly_type = EXCLUDED.anomaly_type
+        anomaly_type = EXCLUDED.anomaly_type,
+        size_ratio = EXCLUDED.size_ratio,
+        -- keep the FIRST receive/store time, so a redelivery doesn't distort latency numbers
+        received_at = COALESCE(trades.received_at, EXCLUDED.received_at),
+        stored_at = COALESCE(trades.stored_at, EXCLUDED.stored_at)
     RETURNING (xmax = 0) AS inserted
 """
 
@@ -76,10 +85,16 @@ def connect_postgres():
     )
 
 
-def to_row(r):
-    trade_time = datetime.fromtimestamp(r["trade_time"] / 1000, tz=timezone.utc)
-    return (r["symbol"], int(r["trade_id"]), trade_time, float(r["price"]), float(r["quantity"]),
-            r["price_z"], r["volume_z"], r["is_anomaly"], r["anomaly_type"])
+def to_millis_datetime(ms):
+    return None if ms is None else datetime.fromtimestamp(ms / 1000, tz=timezone.utc)
+
+
+def to_row(r, stored_at=None):
+    trade_time = to_millis_datetime(r["trade_time"])
+    # Decimal(str(...)) keeps the price exactly as sent (e.g. 65000.01, not 65000.0100000000020)
+    return (r["symbol"], int(r["trade_id"]), trade_time, Decimal(str(r["price"])), Decimal(str(r["quantity"])),
+            r["price_z"], r.get("volume_z"), r["is_anomaly"], r["anomaly_type"],
+            r.get("size_ratio"), to_millis_datetime(r.get("received_at")), stored_at)
 
 
 def dedupe_rows(rows):
@@ -89,16 +104,6 @@ def dedupe_rows(rows):
     for row in rows:
         latest[(row[0], row[1])] = row
     return list(latest.values())
-
-
-def next_offsets(messages):
-    # Kafka's committed offset means "the next message I want", hence the + 1
-    highest = {}
-    for msg in messages:
-        key = (msg.topic(), msg.partition())
-        highest[key] = max(highest.get(key, -1), msg.offset())
-    return [TopicPartition(topic, partition, offset + 1)
-            for (topic, partition), offset in sorted(highest.items())]
 
 
 def write_batch(conn, rows):
@@ -157,12 +162,15 @@ def maybe_log_metrics():
         last_metrics_log = now
 
 
-def process_batch(consumer, conn, messages):
-    """Write one batch to Postgres, then commit its offsets. Returns the (possibly new) connection."""
+def process_batch(consumer, conn, messages, producer):
+    """Write one batch to Postgres, then commit its offsets. Returns the (possibly new) connection.
+    `producer` is only used to send unreadable messages to the dead-letter topic."""
     global write_count
     valid = []
     rows = []
     received_at = []
+    dead_letters = 0
+    stored_at = datetime.now(timezone.utc)
     for msg in messages:
         if msg.error():
             log.warning(f"Consumer error: {msg.error()}")
@@ -170,15 +178,22 @@ def process_batch(consumer, conn, messages):
         valid.append(msg)
         try:
             r = json.loads(msg.value().decode("utf-8"))
-            rows.append(to_row(r))
-            received_at.append(r["received_at"])
-        except (ValueError, KeyError, TypeError) as e:
-            # a message that can never be parsed would block the partition forever, so log it
-            # loudly and move past it (a dead-letter topic comes later)
-            log.error(f"Skipping malformed message at offset {msg.offset()}: {e}")
+            rows.append(to_row(r, stored_at))
+            if r.get("received_at") is not None:
+                received_at.append(r["received_at"])
+        except (ValueError, KeyError, TypeError, ArithmeticError) as e:
+            # a message that can never be parsed would block the partition forever, so park it
+            # on the dead-letter topic (bytes unchanged) and move past it
+            log.error(f"Malformed message at offset {msg.offset()}, sent to '{DEAD_LETTER_TOPIC}': {e}")
+            send_to_dead_letter(producer, DEAD_LETTER_TOPIC, msg, e)
+            dead_letters += 1
 
     if not valid:
         return conn
+
+    if dead_letters and producer.flush(30) > 0:
+        # the dead letters must be safely in Kafka before we commit past them
+        raise RuntimeError("Could not deliver dead letters to Kafka; stopping without committing")
 
     rows = dedupe_rows(rows)
     log.debug(f"batch received messages={len(valid)} rows={len(rows)}")
@@ -204,15 +219,16 @@ def process_batch(consumer, conn, messages):
 def main():
     consumer = Consumer(consumer_config())
     consumer.subscribe([TOPIC])
+    producer = Producer({"bootstrap.servers": KAFKA_BOOTSTRAP_SERVERS})  # dead letters only
     conn = connect_postgres()
 
     log.info(f"Writing '{TOPIC}' to Postgres in batches of up to {BATCH_SIZE}...")
 
     try:
         while True:
-            messages = consumer.consume(num_messages=BATCH_SIZE, timeout=BATCH_TIMEOUT_SECONDS)
+            messages = consume_batch(consumer, BATCH_SIZE, BATCH_TIMEOUT_SECONDS)
             if messages:
-                conn = process_batch(consumer, conn, messages)
+                conn = process_batch(consumer, conn, messages, producer)
             maybe_log_metrics()
 
     except KeyboardInterrupt:
