@@ -1,7 +1,8 @@
 import json
 import psycopg2
 import psycopg2.extras
-from confluent_kafka import Consumer, KafkaException, Producer
+from confluent_kafka import TIMESTAMP_NOT_AVAILABLE, Consumer, KafkaException, Producer
+from prometheus_client import Counter, Histogram, start_http_server
 from datetime import datetime, timezone
 from decimal import Decimal
 
@@ -33,6 +34,22 @@ BATCH_TIMEOUT_SECONDS = float(os.getenv("STORAGE_BATCH_TIMEOUT_SECONDS", "1.0"))
 MAX_RETRY_BACKOFF_SECONDS = 30
 
 METRICS_INTERVAL_SECONDS = float(os.getenv("METRICS_INTERVAL_SECONDS", "60"))
+METRICS_PORT = int(os.getenv("METRICS_PORT", "8003"))  # 0 turns the /metrics endpoint off
+# localhost only: Prometheus runs on this machine, and nothing else should reach the metrics
+METRICS_HOST = os.getenv("METRICS_HOST", "127.0.0.1")
+
+# --- Prometheus metrics (scraped from http://localhost:8003/metrics) ---
+LATENCY_BUCKETS = (0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30)  # seconds
+ROWS_INSERTED = Counter("storage_rows_inserted_total", "New rows written to Postgres")
+ROWS_REUPSERTED = Counter("storage_rows_reupserted_total", "Redelivered rows absorbed by the upsert")
+DEAD_LETTERS = Counter("storage_dead_letters_total", "Messages sent to the dead-letter topic")
+WRITE_RETRIES = Counter("storage_write_retries_total", "Failed Postgres writes that were retried")
+WRITE_SECONDS = Histogram("storage_write_seconds", "Time to upsert one batch", buckets=LATENCY_BUCKETS)
+# stage 2: the detector's result reached Kafka -> the row is stored
+STAGE_LATENCY = Histogram("storage_stage_latency_seconds", "Detector result in Kafka to row stored",
+                          buckets=LATENCY_BUCKETS)
+END_TO_END = Histogram("pipeline_end_to_end_latency_seconds", "Producer receipt to row stored (same clock)",
+                       buckets=LATENCY_BUCKETS)
 
 # Delivery guarantee: offsets are committed only AFTER a batch is safely in Postgres.
 # If we crash before that, Kafka redelivers the batch on restart, and the upsert on
@@ -129,6 +146,7 @@ def write_with_retry(conn, rows, reconnect=None, sleep=None):
             inserted, updated = write_batch(conn, rows)
             return conn, inserted, updated
         except psycopg2.Error as e:
+            WRITE_RETRIES.inc()
             log.error(f"Postgres write failed ({e}). Retrying the same batch in {backoff}s")
             sleep(backoff)
             backoff = min(backoff * 2, MAX_RETRY_BACKOFF_SECONDS)
@@ -186,6 +204,7 @@ def process_batch(consumer, conn, messages, producer):
             # on the dead-letter topic (bytes unchanged) and move past it
             log.error(f"Malformed message at offset {msg.offset()}, sent to '{DEAD_LETTER_TOPIC}': {e}")
             send_to_dead_letter(producer, DEAD_LETTER_TOPIC, msg, e)
+            DEAD_LETTERS.inc()
             dead_letters += 1
 
     if not valid:
@@ -197,13 +216,23 @@ def process_batch(consumer, conn, messages, producer):
 
     rows = dedupe_rows(rows)
     log.debug(f"batch received messages={len(valid)} rows={len(rows)}")
+    write_started = time.time()
     conn, inserted, updated = write_with_retry(conn, rows)
+    WRITE_SECONDS.observe(time.time() - write_started)
+    ROWS_INSERTED.inc(inserted)
+    ROWS_REUPSERTED.inc(updated)
     log.debug(f"batch written inserted={inserted} updated={updated}")
 
     # latency = time from OUR OWN receipt of the trade to this write — same clock on both ends,
     # avoids the clock-skew issue from comparing against Binance's server timestamp
     now_ms = time.time() * 1000
     latencies_ms.extend(now_ms - t for t in received_at)
+    for t in received_at:
+        END_TO_END.observe(max(now_ms - t, 0) / 1000)
+    for msg in valid:
+        kind, created_ms = msg.timestamp()  # set by the detector's producer when it sent the result
+        if kind != TIMESTAMP_NOT_AVAILABLE:
+            STAGE_LATENCY.observe(max(now_ms - created_ms, 0) / 1000)
     write_count += len(rows)
 
     try:
@@ -217,6 +246,8 @@ def process_batch(consumer, conn, messages, producer):
 
 
 def main():
+    if METRICS_PORT:
+        start_http_server(METRICS_PORT, addr=METRICS_HOST)
     consumer = Consumer(consumer_config())
     consumer.subscribe([TOPIC])
     producer = Producer({"bootstrap.servers": KAFKA_BOOTSTRAP_SERVERS})  # dead letters only

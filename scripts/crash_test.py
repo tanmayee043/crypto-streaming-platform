@@ -208,6 +208,7 @@ def consumer_env(settings: Settings, topic: str, group: str, batch_size: int) ->
             "POSTGRES_DB": DB_NAME,
             "LOG_LEVEL": "DEBUG",
             "PYTHONUNBUFFERED": "1",
+            "METRICS_PORT": "0",  # several copies may run at once; no /metrics port clashes
         }
     )
     return env

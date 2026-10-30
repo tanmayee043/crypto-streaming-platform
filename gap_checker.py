@@ -1,4 +1,6 @@
 import psycopg2
+from confluent_kafka import Consumer, TopicPartition
+from prometheus_client import Gauge, start_http_server
 
 import argparse
 import logging
@@ -19,8 +21,25 @@ log = logging.getLogger("gap_checker")
 # one we stored should be in the table. Any missing ID is a trade the pipeline lost, wherever
 # it was lost (WebSocket, producer, detector or storage), because we check the end result.
 
-CHECK_INTERVAL_SECONDS = float(os.getenv("GAP_CHECK_INTERVAL_SECONDS", "60"))
+CHECK_INTERVAL_SECONDS = float(os.getenv("GAP_CHECK_INTERVAL_SECONDS", "15"))
 LOOKBACK_HOURS = float(os.getenv("GAP_CHECK_LOOKBACK_HOURS", "24"))
+METRICS_PORT = int(os.getenv("METRICS_PORT", "8004"))  # 0 turns the /metrics endpoint off
+# localhost only: Prometheus runs on this machine, and nothing else should reach the metrics
+METRICS_HOST = os.getenv("METRICS_HOST", "127.0.0.1")
+
+KAFKA_BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
+# (consumer group, topic it reads) for the two consumers whose lag we watch
+WATCHED_GROUPS = [
+    (os.getenv("DETECTOR_GROUP_ID", "crypto-anomaly-detector"), os.getenv("TRADES_TOPIC", "crypto-trades")),
+    (os.getenv("STORAGE_GROUP_ID", "storage-writer"), os.getenv("ANALYTICS_TOPIC", "trade-analytics")),
+]
+
+# --- Prometheus metrics (scraped from http://localhost:8004/metrics) ---
+COMPLETENESS = Gauge("pipeline_completeness_ratio", "Share of trade IDs stored over the lookback window", ["symbol"])
+MISSING = Gauge("pipeline_missing_trades", "Trade IDs missing over the lookback window", ["symbol"])
+FRESHNESS = Gauge("pipeline_seconds_since_last_trade", "Seconds since the newest stored trade", ["symbol"])
+CONSUMER_LAG = Gauge("pipeline_consumer_lag_messages", "Messages a consumer group has not processed yet",
+                     ["group", "topic"])
 
 COMPLETENESS_SQL = """
     SELECT symbol,
@@ -99,6 +118,40 @@ def record_gaps(conn, gaps):
         return cur.rowcount  # gaps resolved this round
 
 
+FRESHNESS_SQL = "SELECT symbol, max(stored_at) FROM trades WHERE stored_at IS NOT NULL GROUP BY symbol"
+
+
+def freshness(conn):
+    """Seconds since each symbol's newest stored trade. Both times are this machine's clock."""
+    with conn.cursor() as cur:
+        cur.execute(FRESHNESS_SQL)
+        rows = cur.fetchall()
+    now = time.time()
+    return {symbol: round(now - stored_at.timestamp(), 1) for symbol, stored_at in rows}
+
+
+def consumer_lag(groups=None):
+    """{(group, topic): messages not yet processed}. Missing topics are skipped."""
+    lag = {}
+    for group, topic in groups or WATCHED_GROUPS:
+        consumer = Consumer({"bootstrap.servers": KAFKA_BOOTSTRAP_SERVERS, "group.id": group,
+                             "enable.auto.commit": False})
+        try:
+            metadata = consumer.list_topics(topic, timeout=5).topics.get(topic)
+            if metadata is None or metadata.error is not None:
+                continue
+            partitions = [TopicPartition(topic, p) for p in metadata.partitions]
+            total = 0
+            for tp in consumer.committed(partitions, timeout=5):
+                low, high = consumer.get_watermark_offsets(tp, timeout=5)
+                position = tp.offset if tp.offset >= 0 else low  # never committed: starts at the beginning
+                total += max(high - position, 0)
+            lag[(group, topic)] = total
+        finally:
+            consumer.close()
+    return lag
+
+
 def check(conn, hours):
     report = completeness(conn, hours)
     gaps = find_gaps(conn, hours)
@@ -106,8 +159,19 @@ def check(conn, hours):
     for r in report:
         missing = r["expected"] - r["stored"]
         open_gaps = sum(1 for g in gaps if g[0] == r["symbol"])
-        log.info(f"{r['symbol']}: {r['completeness_pct']:.2f}% complete over {hours:g}h "
-                 f"({r['stored']}/{r['expected']} trades, {missing} missing in {open_gaps} gaps)")
+        COMPLETENESS.labels(r["symbol"]).set(r["stored"] / r["expected"])
+        MISSING.labels(r["symbol"]).set(missing)
+        # only log when something is missing, so a healthy pipeline doesn't flood the log
+        level = logging.WARNING if missing else logging.DEBUG
+        log.log(level, f"{r['symbol']}: {r['completeness_pct']:.2f}% complete over {hours:g}h "
+                       f"({r['stored']}/{r['expected']} trades, {missing} missing in {open_gaps} gaps)")
+    for symbol, seconds in freshness(conn).items():
+        FRESHNESS.labels(symbol).set(seconds)
+    try:
+        for (group, topic), messages in consumer_lag().items():
+            CONSUMER_LAG.labels(group, topic).set(messages)
+    except Exception as e:  # Kafka down shouldn't stop the database checks
+        log.warning(f"Could not read consumer lag: {e}")
     if resolved:
         log.info(f"{resolved} earlier gaps are now filled in")
     return report, gaps
@@ -120,10 +184,15 @@ def main():
     args = parser.parse_args()
 
     conn = connect_postgres()
+    if METRICS_PORT and not args.once:
+        start_http_server(METRICS_PORT, addr=METRICS_HOST)
     try:
         while True:
-            _, gaps = check(conn, args.hours)
+            report, gaps = check(conn, args.hours)
             if args.once:
+                for r in report:
+                    log.info(f"{r['symbol']}: {r['completeness_pct']:.2f}% complete "
+                             f"({r['stored']}/{r['expected']} trades)")
                 for symbol, first, last in gaps[:20]:
                     log.info(f"  gap {symbol}: ids {first}-{last} ({last - first + 1} missing)")
                 break

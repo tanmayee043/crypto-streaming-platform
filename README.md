@@ -12,7 +12,8 @@ A real-time pipeline that streams live crypto trades from Binance.US through Kaf
 - **Fewer false alarms, more real anomalies caught:** on 60,000 real trades the new model flags 2.9% of trades instead of 4.6%, and catches 95% of planted price spikes instead of 72%. The gains hold on a separate 60,000-trade hold-out set.
 - **Completeness you can measure:** Binance trade IDs are sequential per symbol, so a gap checker reports exactly which trades are missing and the % captured.
 - **Found and fixed silent data loss:** the original storage consumer lost 67% of trades during a single Postgres restart. Now 0.
-- **Replayable:** recorded real trades can be replayed at 10×/100×/1000× or at a fixed rate for repeatable tests and load tests (~3,400 trades/s on a laptop).
+- **Replayable:** recorded real trades can be replayed at 10×/100×/1000×, from the dashboard or the command line. Replaying the 10 Oct 2025 crash (10,507 real trades) at 1000× takes 22 seconds and flags 7.0% of trades, against 1.5–2.9% on ordinary days.
+- **Live and observable:** the dashboard is pushed new trades and anomalies over Server-Sent Events, shows pipeline health against its SLOs, and explains every flag. Prometheus, a provisioned Grafana dashboard and OpenTelemetry traces cover the operator's side.
 
 ## Architecture
 
@@ -32,9 +33,12 @@ producer.py ──► Kafka: crypto-trades   (key = symbol, 3 partitions)
               storage_consumer.py   batched upserts, manual offset commits
                         │
                         ▼
-                   PostgreSQL ──► FastAPI (main.py) ──► live dashboard (Chart.js)
-                        ▲
-                 gap_checker.py     missing trade IDs → trade_gaps table, completeness %
+                   PostgreSQL ──► FastAPI (main.py) ──SSE──► dashboard (static/index.html)
+                        ▲                 │  └─► alerts: Discord webhook + browser notifications
+                 gap_checker.py           └─► OpenTelemetry traces ──► Jaeger
+        missing trade IDs, completeness %, consumer lag
+
+   every service ──/metrics──► Prometheus ──► Grafana dashboard (SLOs, per-stage latency, lag)
 ```
 
 ## Delivery guarantee
@@ -88,6 +92,33 @@ Binance trade IDs are sequential per symbol. That was checked first: 120,000 tra
 
 The bottleneck at full speed is the detector (two medians over 100 values per trade in pure Python); more partitions with more detector instances would scale it. Why the 1,000 trades/s latency varies between runs is still being investigated.
 
+## Dashboard
+
+A single page (`static/index.html`, plain HTML/CSS/JS with Chart.js, served by FastAPI) built for a market-surveillance analyst, with its design system in [`DESIGN.md`](DESIGN.md) (adapted from Kraken's) and product context in [`PRODUCT.md`](PRODUCT.md).
+
+- **Live push:** `GET /stream` sends new trades, anomalies and health as Server-Sent Events. One background loop in the API reads new rows twice a second and fans them out to every open browser; a browser that reconnects catches up on anything it missed from the last row ID it saw.
+- **Price chart with anomaly markers** that differ by shape as well as colour (price ▲, size ◆, both ★).
+- **Health strip:** trades/s, p95 latency, completeness and consumer lag, each against its target.
+- **Anomaly drawer:** the trade, its scores, the trades around it as a mini chart, and plain-English reasons it was or wasn't flagged.
+- **Anomaly history** with symbol, type and date filters and cursor pagination; a **pipeline health** view with per-symbol completeness and consumer lag.
+- **Replay mode:** pick a recording and 10×/100×/1000×. It runs the same model code in the API process and streams the results; nothing is written to Kafka or Postgres, and the page labels it as a replay. When the live feed is offline, the page offers a replay of the 10 Oct 2025 crash instead of an empty screen.
+- Light and dark themes, keyboard navigation, reduced-motion support, and a layout that works at 375 px. Checked in a browser at desktop and phone widths, with no console errors; during a 1000× replay the page has no long tasks, because updates are drawn at most four times a second.
+
+## Alerts
+
+`alerts.py` posts to a Discord webhook (`DISCORD_WEBHOOK_URL`) when anomalies arrive (batched to at most one message a minute) and once when an SLO is breached, then once more when it recovers. The dashboard can also raise browser notifications for new anomalies while the tab is in the background.
+
+## Observability
+
+```bash
+docker compose --profile observability up -d     # Prometheus :9090, Grafana :3000, Jaeger :16686
+```
+
+- **Prometheus metrics** from every service (`producer` :8001, `detector` :8002, `storage` :8003, `gap_checker` :8004, API `/metrics`): throughput, anomalies, dead letters, write retries, reconnects, consumer lag, completeness, freshness, and latency histograms per stage (producer receipt → detector result in Kafka → row stored). The metrics only listen on localhost.
+- **Grafana** loads the "Crypto streaming pipeline" dashboard automatically ([`observability/`](observability/)): SLO stats, throughput, latency p50/p95 and where the time goes per stage, consumer lag, completeness, anomalies and errors.
+- **OpenTelemetry** traces every API request and its SQL queries and sends them to Jaeger when `OTEL_EXPORTER_OTLP_ENDPOINT` is set. The live-stream polling loop is excluded so it doesn't bury real requests.
+- Liveness and readiness at `/healthz` and `/readyz`.
+
 ## Tech stack
 
 | Layer | Technology |
@@ -96,7 +127,8 @@ The bottleneck at full speed is the detector (two medians over 100 values per tr
 | Messaging | Apache Kafka 4.3 (KRaft), `confluent-kafka`, dead-letter topics |
 | Stream processing | Plain Python (per-symbol windows, robust z-score) |
 | Storage | PostgreSQL 16 (`NUMERIC` prices), `psycopg2` |
-| API and dashboard | FastAPI, HTML/JS with Chart.js |
+| API and dashboard | FastAPI (REST + Server-Sent Events), HTML/CSS/JS with Chart.js |
+| Observability | Prometheus, Grafana, OpenTelemetry + Jaeger, Discord webhook alerts |
 | Testing and CI | pytest, Testcontainers, ruff, GitHub Actions |
 | Infrastructure | Docker Compose (pinned image versions) |
 
@@ -135,7 +167,7 @@ python gap_checker.py
 uvicorn main:app --reload
 ```
 
-Then open the dashboard at `http://localhost:8000/dashboard/`, completeness at `http://localhost:8000/completeness`, the API docs at `http://localhost:8000/docs`, or Kafka UI at `http://localhost:8080`.
+Then open the dashboard at `http://localhost:8000/dashboard/`, the API docs at `http://localhost:8000/docs`, or Kafka UI at `http://localhost:8080`. For Grafana and tracing, see [Observability](#observability).
 
 ### Replaying recorded trades
 
@@ -157,6 +189,9 @@ All settings come from environment variables (or `.env`). See [`.env.example`](.
 | `WINDOW_SIZE` | `100` | Trades per symbol in the detector's window |
 | `PRICE_Z_THRESHOLD` / `SIZE_RATIO_THRESHOLD` | `6.0` / `50` | Anomaly thresholds |
 | `STORAGE_BATCH_SIZE` | `500` | Max trades per database transaction |
+| `DISCORD_WEBHOOK_URL` | (empty) | Where alerts go; empty means log only |
+| `SLO_COMPLETENESS_PCT` / `SLO_LATENCY_P95_SECONDS` / `SLO_CONSUMER_LAG` | `99.9` / `2` / `1000` | Targets for the health strip, alerts and Grafana |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | (unset) | Turns on API tracing, e.g. `http://localhost:4318` |
 
 ## Testing
 
@@ -171,7 +206,8 @@ python scripts/load_test.py --rate 1000
 ```
 
 - **Unit tests** cover the anomaly model (log returns, robust z-score, size ratio, current trade excluded), per-symbol state, both consumers' "make it durable, then commit" order, dead-lettering, and the replay and recording helpers.
-- **Integration tests** run against a throwaway Postgres container (Testcontainers): exact `NUMERIC` prices, idempotent upserts, all-or-nothing batches, reconnects, and the gap checker.
+- **Integration tests** run against a throwaway Postgres container (Testcontainers): exact `NUMERIC` prices, idempotent upserts, all-or-nothing batches, reconnects, the gap checker, and the API (history filters and paging, the detail drawer's data, health, and the live loop pushing new rows to connected clients).
+- **API and alert tests:** flag explanations, the event format, replay streaming, replay files limited to their folders, Discord batching, breach-once-and-recover, and a real HTTP post to a fake webhook.
 - **CI** runs lint, the tests, a 20-kill storage crash test and a 10-kill detector crash test on every push and pull request.
 
 ## Project structure
@@ -180,11 +216,14 @@ python scripts/load_test.py --rate 1000
 producer.py              Binance.US WebSocket → Kafka, keyed by symbol, reconnects with backoff
 anomaly_detector.py      crypto-trades → per-symbol anomaly model → trade-analytics
 storage_consumer.py      trade-analytics → Postgres (batched upserts, manual offset commits)
-gap_checker.py           missing trade IDs and completeness %
+gap_checker.py           missing trade IDs, completeness %, consumer lag and freshness (+ metrics)
+alerts.py                Discord alerts for anomalies and SLO breaches
 kafka_helpers.py         offset, batching and dead-letter helpers shared by both consumers
-main.py                  FastAPI: /trades, /anomalies, /anomalies/count, /completeness, /dashboard
+main.py                  FastAPI: REST, /stream (SSE), /health/pipeline, /replay, /metrics, /dashboard
 schema.sql, migrations/  database schema and upgrades for existing databases
-static/index.html        live dashboard
+static/index.html        dashboard (DESIGN.md: design system, PRODUCT.md: who it's for)
+observability/           Prometheus config, Grafana provisioning and dashboard
+replays/                 recorded real trades for replay mode (10 Oct 2025 crash)
 scripts/                 recording, replay, model evaluation, crash tests, load test
 tests/                   unit and integration tests, sample trade file
 ```
@@ -198,11 +237,14 @@ tests/                   unit and integration tests, sample trade file
 - **Dead letters are kept but not yet shown** anywhere. They're readable in Kafka UI.
 - **Gaps are reported, not yet repaired.** Backfilling missing trades from the exchange's REST API is planned for the Lakehouse project.
 - **Kafka data is not on a named volume**, so recreating the Kafka container wipes the topics.
-- **Polling dashboard** (every 3 s), showing one symbol (`BTCUSDT`).
+- **The live stream follows row IDs.** That's exact with one storage consumer (its transactions commit in ID order); several storage consumers in parallel could commit IDs out of order, and Postgres `LISTEN/NOTIFY` would be the next step.
+- **Alerts run inside the API process**, so they stop if the API stops. In production, SLO alerts would come from Prometheus/Grafana alerting, which keeps working when the API is down.
+- **Large orders flag several times.** One big order that fills against many resting orders creates many trades with the same timestamp, and each fill can be flagged as a size anomaly (visible in the crash replay). Grouping fills by timestamp and side before scoring would report it once.
+- **Replay mode in the UI scores in the API process**, not through Kafka; full-pipeline replays use `scripts/replay.py`.
 
 ## Roadmap
 
-- Server-Sent Events dashboard with anomaly detail drawer, replay mode and pipeline health strip
-- Prometheus metrics and Grafana (per-stage latency, consumer lag, completeness)
-- 24/7 deployment with external uptime monitoring
+- 24/7 deployment behind HTTPS with external uptime monitoring
+- Use the per-stage latency metrics to explain why latency at 1,000 trades/s varies between runs
+- Group fills of one order before scoring
 - Automatic backfill of gaps from the exchange's REST API

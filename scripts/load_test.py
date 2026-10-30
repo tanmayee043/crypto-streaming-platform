@@ -72,7 +72,7 @@ def main():
            "TRADES_TOPIC": trades_topic, "ANALYTICS_TOPIC": analytics_topic,
            "TRADES_DLQ_TOPIC": topics[2], "ANALYTICS_DLQ_TOPIC": topics[3], "POSTGRES_DB": DB_NAME,
            "DETECTOR_GROUP_ID": f"load-{run_id}-detector", "STORAGE_GROUP_ID": f"load-{run_id}-storage",
-           "METRICS_INTERVAL_SECONDS": "5", "PYTHONUNBUFFERED": "1"}
+           "METRICS_INTERVAL_SECONDS": "5", "PYTHONUNBUFFERED": "1", "METRICS_PORT": "0"}
     procs = [start_consumer(env, out_dir / "detector.log", "anomaly_detector.py"),
              start_consumer(env, out_dir / "storage.log", "storage_consumer.py")]
     conn = psycopg2.connect(**{**settings.postgres_connect_kwargs(), "dbname": DB_NAME})
