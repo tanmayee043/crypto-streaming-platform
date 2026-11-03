@@ -1,5 +1,5 @@
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import RedirectResponse, Response, StreamingResponse
 import psycopg2.extras
 import os
 from dotenv import load_dotenv
@@ -10,7 +10,7 @@ import asyncio
 import json
 import logging
 import time
-from collections import deque
+from collections import Counter as Tally, deque
 from contextlib import asynccontextmanager, nullcontext
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -19,6 +19,7 @@ from pathlib import Path
 import alerts
 import anomaly_detector
 import gap_checker
+from rate_limit import RateLimitMiddleware
 from scripts.replay import load_trades, send_times
 
 load_dotenv()
@@ -31,6 +32,12 @@ REPLAY_DIRS = [ROOT / "replays", ROOT / "data", ROOT / "tests" / "data"]
 POLL_SECONDS = 0.5      # how often the live stream checks Postgres for new rows
 HEALTH_SECONDS = 5      # how often pipeline health is recomputed and pushed
 KEEPALIVE_SECONDS = 15  # comment line so proxies don't close an idle stream
+
+# Limits for the public site: a free VM has to survive visitors (and bots)
+RATE_LIMIT_PER_MINUTE = int(os.getenv("RATE_LIMIT_PER_MINUTE", "300"))  # per IP, 0 turns it off
+MAX_STREAMS_PER_IP = int(os.getenv("MAX_STREAMS_PER_IP", "5"))
+MAX_REPLAYS_PER_IP = int(os.getenv("MAX_REPLAYS_PER_IP", "2"))
+MAX_REPLAYS_TOTAL = int(os.getenv("MAX_REPLAYS_TOTAL", "5"))  # replays use the most CPU
 
 # API metrics live in their own registry, so importing anomaly_detector (for replay mode)
 # doesn't make the API publish the detector's metrics as well
@@ -145,6 +152,19 @@ async def lifespan(app):
 
 
 app = FastAPI(title="Crypto Market Streaming Platform", lifespan=lifespan)
+app.add_middleware(RateLimitMiddleware, per_minute=RATE_LIMIT_PER_MINUTE)
+
+open_streams = Tally()  # client IP -> open live streams
+open_replays = Tally()  # client IP -> running replays
+
+
+def client_ip(request):
+    return request.client.host if request.client else "unknown"
+
+
+@app.get("/", include_in_schema=False)
+def home():
+    return RedirectResponse("/dashboard/")
 
 # Traces go to any OpenTelemetry collector (e.g. Jaeger: docker compose --profile observability up).
 # Without OTEL_EXPORTER_OTLP_ENDPOINT set, tracing stays off and costs nothing.
@@ -171,11 +191,15 @@ async def stream(request: Request, symbol: str | None = None, after_id: int | No
     `after_id` (or the browser's automatic Last-Event-ID on reconnect) replays rows it missed."""
     last_event = request.headers.get("last-event-id")
     after_id = int(last_event) if last_event and last_event.isdigit() else after_id
+    ip = client_ip(request)
+    if open_streams[ip] >= MAX_STREAMS_PER_IP:
+        raise HTTPException(429, detail="Too many open streams from this address.")
 
     async def events():
         queue = asyncio.Queue(maxsize=2000)
         subscribers.add(queue)  # subscribe BEFORE catching up, so nothing slips between the two
         STREAM_CLIENTS.inc()
+        open_streams[ip] += 1
         sent_id = after_id
         try:
             yield "retry: 3000\n\n"  # browser reconnects after 3 s if the connection drops
@@ -207,6 +231,7 @@ async def stream(request: Request, symbol: str | None = None, after_id: int | No
         finally:
             subscribers.discard(queue)
             STREAM_CLIENTS.dec()
+            open_streams[ip] -= 1
 
     return StreamingResponse(events(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
@@ -420,47 +445,60 @@ async def replay_stream(request: Request, file: str, speed: float = Query(100, g
     path = replay_paths().get(file)  # only files from the replay folders, never an arbitrary path
     if path is None:
         raise HTTPException(404, detail=f"No recorded file called {file}")
+    ip = client_ip(request)
+    if open_replays[ip] >= MAX_REPLAYS_PER_IP or sum(open_replays.values()) >= MAX_REPLAYS_TOTAL:
+        raise HTTPException(429, detail="Too many replays are running. Please try again in a minute.")
     trades = await asyncio.to_thread(load_trades, path)
 
     async def events():
-        windows = {}
-        recent = {}  # symbol -> last 30 replayed rows, sent with each anomaly as its context
-        schedule = send_times(trades, speed=speed)
-        started = time.monotonic()
-        batch, flagged, last_flush = [], {}, time.monotonic()
-        for i, (trade, due) in enumerate(zip(trades, schedule, strict=True)):
-            wait = due - (time.monotonic() - started)
-            if wait > 0:
-                await asyncio.sleep(wait)
-            window = windows.setdefault(trade["s"], anomaly_detector.new_window())
-            previous_price = window["last_price"]
-            price_z, size_ratio = anomaly_detector.score_trade(window, float(trade["p"]), float(trade["q"]))
-            anomaly_type = anomaly_detector.classify_anomaly(price_z, size_ratio)
-            row = {"id": i, "symbol": trade["s"], "trade_id": trade["t"],
-                   "trade_time": datetime.fromtimestamp(trade["T"] / 1000, tz=timezone.utc).isoformat(),
-                   "price": float(trade["p"]), "quantity": float(trade["q"]), "price_z": price_z,
-                   "size_ratio": size_ratio, "volume_z": None, "is_anomaly": anomaly_type is not None,
-                   "anomaly_type": anomaly_type}
-            context = recent.setdefault(trade["s"], deque(maxlen=30))
-            if anomaly_type:
-                flagged[anomaly_type] = flagged.get(anomaly_type, 0) + 1
-                yield sse("anomaly", {**row, "reasons": explain(row, previous_price),
-                                      "context": [*context, row]})
-            context.append(row)
-            if symbol is None or trade["s"] == symbol:
-                batch.append(row)
-            # group trades into ~10 messages a second, so 1000x speed doesn't flood the browser
-            if time.monotonic() - last_flush >= 0.1 or i == len(trades) - 1:
-                if await request.is_disconnected():
-                    return
-                if batch:
-                    yield sse("trades", batch)
-                yield sse("progress", {"sent": i + 1, "total": len(trades), "market_time": row["trade_time"]})
-                batch, last_flush = [], time.monotonic()
-        yield sse("done", {"trades": len(trades), "anomalies": flagged,
-                           "seconds": round(time.monotonic() - started, 1)})
+        open_replays[ip] += 1
+        try:
+            async for chunk in replay_events(request, trades, speed, symbol):
+                yield chunk
+        finally:
+            open_replays[ip] -= 1
 
     return StreamingResponse(events(), media_type="text/event-stream", headers={"Cache-Control": "no-cache"})
+
+
+async def replay_events(request, trades, speed, symbol):
+    """The replay itself: score each trade on schedule and yield Server-Sent Events."""
+    windows = {}
+    recent = {}  # symbol -> last 30 replayed rows, sent with each anomaly as its context
+    schedule = send_times(trades, speed=speed)
+    started = time.monotonic()
+    batch, flagged, last_flush = [], {}, time.monotonic()
+    for i, (trade, due) in enumerate(zip(trades, schedule, strict=True)):
+        wait = due - (time.monotonic() - started)
+        if wait > 0:
+            await asyncio.sleep(wait)
+        window = windows.setdefault(trade["s"], anomaly_detector.new_window())
+        previous_price = window["last_price"]
+        price_z, size_ratio = anomaly_detector.score_trade(window, float(trade["p"]), float(trade["q"]))
+        anomaly_type = anomaly_detector.classify_anomaly(price_z, size_ratio)
+        row = {"id": i, "symbol": trade["s"], "trade_id": trade["t"],
+               "trade_time": datetime.fromtimestamp(trade["T"] / 1000, tz=timezone.utc).isoformat(),
+               "price": float(trade["p"]), "quantity": float(trade["q"]), "price_z": price_z,
+               "size_ratio": size_ratio, "volume_z": None, "is_anomaly": anomaly_type is not None,
+               "anomaly_type": anomaly_type}
+        context = recent.setdefault(trade["s"], deque(maxlen=30))
+        if anomaly_type:
+            flagged[anomaly_type] = flagged.get(anomaly_type, 0) + 1
+            yield sse("anomaly", {**row, "reasons": explain(row, previous_price),
+                                  "context": [*context, row]})
+        context.append(row)
+        if symbol is None or trade["s"] == symbol:
+            batch.append(row)
+        # group trades into ~10 messages a second, so 1000x speed doesn't flood the browser
+        if time.monotonic() - last_flush >= 0.1 or i == len(trades) - 1:
+            if await request.is_disconnected():
+                return
+            if batch:
+                yield sse("trades", batch)
+            yield sse("progress", {"sent": i + 1, "total": len(trades), "market_time": row["trade_time"]})
+            batch, last_flush = [], time.monotonic()
+    yield sse("done", {"trades": len(trades), "anomalies": flagged,
+                       "seconds": round(time.monotonic() - started, 1)})
 
 
 @app.get("/metrics", include_in_schema=False)
