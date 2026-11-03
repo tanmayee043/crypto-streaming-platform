@@ -6,12 +6,17 @@ A real-time pipeline that streams live crypto trades from Binance.US through Kaf
 
 **[Demo video coming soon]**
 
+## The problem
+
+An exchange's surveillance team needs to see abnormal trading *as it happens*, and to prove to compliance that the system never silently dropped a trade. Spotting spikes is the easy half. This project is built around the hard half: a guarantee that every trade is stored exactly once, even through crashes, and a measurement of exactly which trades were missed.
+
 ## Highlights
 
 - **No lost or duplicated trades, proven end to end:** the storage consumer and the anomaly detector were each hard-killed 100 times while trades were flowing. 0 missing, 0 duplicates, and every anomaly score matched an uninterrupted run.
 - **Fewer false alarms, more real anomalies caught:** on 60,000 real trades the new model flags 2.9% of trades instead of 4.6%, and catches 95% of planted price spikes instead of 72%. The gains hold on a separate 60,000-trade hold-out set.
 - **Completeness you can measure:** Binance trade IDs are sequential per symbol, so a gap checker reports exactly which trades are missing and the % captured.
 - **Found and fixed silent data loss:** the original storage consumer lost 67% of trades during a single Postgres restart. Now 0.
+- **Fast enough to spare:** sustains about 5,850 trades/s end to end on a laptop (live Binance.US traffic is under 1 trade/s), with p95 latency under 2 seconds at 1,000 trades/s.
 - **Replayable:** recorded real trades can be replayed at 10×/100×/1000×, from the dashboard or the command line. Replaying the 10 Oct 2025 crash (10,507 real trades) at 1000× takes 22 seconds and flags 7.0% of trades, against 1.5–2.9% on ordinary days.
 - **Live and observable:** the dashboard is pushed new trades and anomalies over Server-Sent Events, shows pipeline health against its SLOs, and explains every flag. Prometheus, a provisioned Grafana dashboard and OpenTelemetry traces cover the operator's side.
 
@@ -55,10 +60,23 @@ A crash before step 3 means the batch is processed again, and the upsert turns r
 
 | Test | Kills | Trades | Rows stored | Missing | Duplicates | Wrong scores |
 |---|---|---|---|---|---|---|
-| [Storage consumer](scripts/crash_test.py) (synthetic, 2,000/s) | 100 (52 mid-write) | 126,123 | 126,123 | **0** | **0** | n/a |
-| [Anomaly detector](scripts/detector_crash_test.py) (real trades, 500/s) | 100 (95 mid-batch) | 60,000 | 60,000 | **0** | **0** | **0** |
+| [Storage consumer](scripts/crash_test.py) (synthetic, 2,000/s) | 100 (86 mid-write) | 162,969 | 162,969 | **0** | **0** | n/a |
+| [Anomaly detector](scripts/detector_crash_test.py) (real trades, 500/s) | 100 (62 mid-batch) | 60,000 | 60,000 | **0** | **0** | **0** |
 
 **The bug this fixed:** both consumers originally relied on Kafka's auto-commit, which commits offsets on a timer whether or not the work succeeded. In a test with one Postgres restart, the original storage consumer lost 2,066 of 3,070 trades; the fixed one lost none. The original detector also never published the first 29 trades after each start, so they never reached the database.
+
+### Before and after
+
+| | Original | Now |
+|---|---|---|
+| Offsets committed | On a 5-second timer, whether or not the write worked (auto-commit) | Only after the write is durable |
+| One Postgres restart while trades flow | **2,066 of 3,070 trades lost (67%)**, silently | **0 lost**: reconnects and retries the same batch |
+| 100 hard kills of each consumer | Not tested | **0 missing, 0 duplicates, 0 wrong scores** |
+| First trades after each detector start | First 29 never stored; blind spot while warming up | All stored; window rebuilt from Kafka |
+| Flag rate on 60,000 real trades | 4.63% | **2.89%** |
+| Planted price spikes caught | 72.2% | **95.2%** |
+| Knowing what was missed | Couldn't tell | Exact missing trade IDs and % captured |
+| Maximum sustained throughput | Not measured | **about 5,850 trades/s** |
 
 ## Anomaly model
 
@@ -82,15 +100,17 @@ Binance trade IDs are sequential per symbol. That was checked first: 120,000 tra
 
 ## Performance
 
-[`scripts/load_test.py`](scripts/load_test.py) replays 60,000 real trades through the detector and storage consumer and measures latency from receipt to Postgres (one clock, no skew):
+[`scripts/load_test.py`](scripts/load_test.py) replays 60,000 real trades through the real detector and storage consumer and measures latency from receipt to Postgres, per trade, on one clock (so no clock skew). Measured on a Windows laptop with Kafka and Postgres in Docker Desktop:
 
-| Load | Throughput | Latency p50 | Latency p95 |
-|---|---|---|---|
-| Live feed (~1 trade/s, 30-min run, before Week 2) | ~1.15 trades/s | 32 ms | 40 ms |
-| Steady 1,000 trades/s (5 runs) | 1,000 trades/s | 15–200 ms | 75–280 ms |
-| As fast as possible | ~3,400 trades/s | backlog | backlog |
+| Load | Throughput | Latency p50 | Latency p95 | Latency p99 |
+|---|---|---|---|---|
+| Live feed, 4 symbols (~0.3 trades/s, 5-min run) | live | | 48 ms | |
+| Steady 1,000 trades/s (several runs) | ~1,000 trades/s | 14–199 ms | 27–254 ms | 75–431 ms |
+| As fast as possible (2 runs) | **~5,850 trades/s** | backlog | backlog | backlog |
 
-The bottleneck at full speed is the detector (two medians over 100 values per trade in pure Python); more partitions with more detector instances would scale it. Why the 1,000 trades/s latency varies between runs is still being investigated.
+All of these are well inside the 2-second p95 target. Latency at 1,000 trades/s is bimodal: a run settles at either about 15 ms or about 200 ms and stays there. The per-stage metrics show the slower mode in both consumers at once, and the Postgres write itself stays around 5–10 ms, so the database isn't the cause; the root cause is still open, and numbers from the Linux VM will show whether it's specific to this setup.
+
+**A profile found the biggest speed-up.** Python's `statistics.mean` does exact-fraction arithmetic, and it was the slowest part of the detector. Replacing it with `math.fsum` took the detector's own code from about 3,000–7,000 to about 24,000 trades/s and the whole pipeline from about 3,400 to about 5,850 trades/s, with identical model results on both evaluation sets.
 
 ## Dashboard
 
@@ -119,6 +139,32 @@ docker compose --profile observability up -d     # Prometheus :9090, Grafana :30
 - **OpenTelemetry** traces every API request and its SQL queries and sends them to Jaeger when `OTEL_EXPORTER_OTLP_ENDPOINT` is set. The live-stream polling loop is excluded so it doesn't bury real requests.
 - Liveness and readiness at `/healthz` and `/readyz`.
 
+## Deployment
+
+Designed to run 24/7 on a free Oracle Cloud ARM VM. Step-by-step: [`docs/deploy-oracle.md`](docs/deploy-oracle.md). Operating it: [`docs/runbook.md`](docs/runbook.md).
+
+- **Only HTTPS is public.** [Caddy](deploy/Caddyfile) is the single entrance and handles certificates automatically. Kafka and Postgres publish no ports; Prometheus, Grafana and Jaeger are bound to the VM's localhost and reached through an SSH tunnel. `/metrics` is blocked at the entrance.
+- **Limits for a public demo:** per-IP rate limits on every endpoint and caps on concurrent streams and replays. There's nothing that spends a paid quota, so no login is needed; visitors get the read-only dashboard and replays.
+- **Secrets stay out of the repo:** random passwords are generated on the VM, and deploy credentials live in GitHub's encrypted secrets.
+- **The disk can't fill:** Kafka keeps 7 days or 1 GB per partition, `retention.py` creates daily Postgres partitions and drops those older than 90 days (instant, unlike row deletes), Docker logs rotate at 30 MB per service, and Prometheus keeps 35 days or 2 GB.
+- **CI/CD:** after CI passes on `main`, [GitHub Actions](.github/workflows/deploy.yml) builds the ARM image, pushes it to GitHub's registry and deploys over SSH; [`deploy.sh`](deploy/deploy.sh) applies migrations, waits for health checks, and rolls back if the new version is unhealthy.
+- **Restarts:** Docker starts on boot and every service restarts automatically. A restart at any moment is safe, which is what the crash tests prove.
+- **External monitoring:** UptimeRobot checks `/readyz` from outside, because a system can't report its own downtime.
+
+The dashboard is served by the API itself rather than from separate static hosting: same address, no cross-origin setup, and the live streams just work. A shared React app with static hosting is a possible later step.
+
+**On the completeness claim:** the target is 99.9% of trades captured over 30 days. That figure can only be quoted after the system has really run that long, verified by trade-ID checks and external uptime monitoring. Until then, this README reports only what has been measured.
+
+## What breaks at 10×
+
+Live Binance.US traffic is well under 1 trade/s, so 10× live is nothing; the interesting question is 10× the load test, about 58,000 trades/s:
+
+- **The detector goes first:** it's single-threaded Python. Kafka's keys already let it scale out per partition, so the next steps are more partitions, one detector per partition, and an incremental median instead of re-sorting 100 values per trade.
+- **Hash partitioning gets lumpy:** BTC and ETH share a partition today. Busy symbols would need explicit placement.
+- **Storage is next:** one consumer doing batched upserts. Several would work per partition, but the live stream currently relies on row IDs committing in order, so it would need Postgres `LISTEN/NOTIFY` or a Kafka-backed feed.
+- **A single VM is the real ceiling:** one broker with no replication means a disk failure loses what's in Kafka. Real scale means three brokers, replication and managed Postgres, which is also where "free" ends.
+- **Browsers:** every event goes to every open dashboard. Past a few thousand trades/s the server should send aggregates (say, one point per second), not every trade.
+
 ## Tech stack
 
 | Layer | Technology |
@@ -130,7 +176,7 @@ docker compose --profile observability up -d     # Prometheus :9090, Grafana :30
 | API and dashboard | FastAPI (REST + Server-Sent Events), HTML/CSS/JS with Chart.js |
 | Observability | Prometheus, Grafana, OpenTelemetry + Jaeger, Discord webhook alerts |
 | Testing and CI | pytest, Testcontainers, ruff, GitHub Actions |
-| Infrastructure | Docker Compose (pinned image versions) |
+| Infrastructure | Docker Compose (pinned image versions), Caddy, Oracle Cloud Always Free ARM VM, GitHub Actions + GitHub's registry |
 
 ## Getting started
 
@@ -164,6 +210,7 @@ python producer.py
 python anomaly_detector.py
 python storage_consumer.py
 python gap_checker.py
+python retention.py
 uvicorn main:app --reload
 ```
 
@@ -217,12 +264,16 @@ producer.py              Binance.US WebSocket → Kafka, keyed by symbol, reconn
 anomaly_detector.py      crypto-trades → per-symbol anomaly model → trade-analytics
 storage_consumer.py      trade-analytics → Postgres (batched upserts, manual offset commits)
 gap_checker.py           missing trade IDs, completeness %, consumer lag and freshness (+ metrics)
+retention.py             creates daily Postgres partitions, drops old ones
+rate_limit.py            per-IP rate limiting for the public API
 alerts.py                Discord alerts for anomalies and SLO breaches
 kafka_helpers.py         offset, batching and dead-letter helpers shared by both consumers
 main.py                  FastAPI: REST, /stream (SSE), /health/pipeline, /replay, /metrics, /dashboard
 schema.sql, migrations/  database schema and upgrades for existing databases
 static/index.html        dashboard (DESIGN.md: design system, PRODUCT.md: who it's for)
 observability/           Prometheus config, Grafana provisioning and dashboard
+Dockerfile, docker-compose.prod.yaml, deploy/   production image, stack, Caddy, VM setup and deploy scripts
+docs/                    deployment guide, runbook, demo video script
 replays/                 recorded real trades for replay mode (10 Oct 2025 crash)
 scripts/                 recording, replay, model evaluation, crash tests, load test
 tests/                   unit and integration tests, sample trade file
@@ -234,9 +285,10 @@ tests/                   unit and integration tests, sample trade file
 - **Window rebuild reads the last 2,000 messages per partition.** That is exact while each symbol had at least 101 trades in those messages; a very rare symbol sharing a partition with busy ones could restart with a partly filled window.
 - **Masking in degenerate windows.** When more than half of a window is identical, one huge outlier can still raise the scale enough to hide the next anomaly.
 - **Thresholds were tuned on historical data** (checked on a hold-out set). They should be re-checked periodically as market conditions change.
-- **Dead letters are kept but not yet shown** anywhere. They're readable in Kafka UI.
+- **Dead letters are kept but not yet shown** on the dashboard; they can be read with Kafka's tools.
 - **Gaps are reported, not yet repaired.** Backfilling missing trades from the exchange's REST API is planned for the Lakehouse project.
-- **Kafka data is not on a named volume**, so recreating the Kafka container wipes the topics.
+- **One broker, no replication.** Production keeps Kafka on a named volume, but a single VM is still a single point of failure; Prometheus data and backups live on the same disk.
+- **In development, Kafka has no named volume**, so recreating its container wipes the topics.
 - **The live stream follows row IDs.** That's exact with one storage consumer (its transactions commit in ID order); several storage consumers in parallel could commit IDs out of order, and Postgres `LISTEN/NOTIFY` would be the next step.
 - **Alerts run inside the API process**, so they stop if the API stops. In production, SLO alerts would come from Prometheus/Grafana alerting, which keeps working when the API is down.
 - **Large orders flag several times.** One big order that fills against many resting orders creates many trades with the same timestamp, and each fill can be flagged as a size anomaly (visible in the crash replay). Grouping fills by timestamp and side before scoring would report it once.
@@ -244,7 +296,7 @@ tests/                   unit and integration tests, sample trade file
 
 ## Roadmap
 
-- 24/7 deployment behind HTTPS with external uptime monitoring
-- Use the per-stage latency metrics to explain why latency at 1,000 trades/s varies between runs
+- Run 30 days and publish the real completeness figure
+- Explain why latency at 1,000 trades/s settles at either about 15 ms or 200 ms between runs
 - Group fills of one order before scoring
 - Automatic backfill of gaps from the exchange's REST API
