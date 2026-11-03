@@ -84,7 +84,9 @@ def robust_z(value, values):
     median = statistics.median(values)
     deviations = [abs(v - median) for v in values]
     scale = max(MAD_TO_STDEV * statistics.median(deviations),
-                MEAN_AD_TO_STDEV * statistics.mean(deviations))
+                # fsum, not statistics.mean: mean does exact-fraction maths and was the slowest
+                # part of the whole detector (see the profile in the guide)
+                MEAN_AD_TO_STDEV * math.fsum(deviations) / len(deviations))
     if scale == 0:
         return 0.0
     return (value - median) / scale

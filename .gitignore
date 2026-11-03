@@ -16,3 +16,6 @@ notes/
 
 # recorded trade files (see scripts/record_trades.py)
 /data/
+
+# local database backups
+backup-*.sql*

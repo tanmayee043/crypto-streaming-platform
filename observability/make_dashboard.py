@@ -104,6 +104,11 @@ panel("Errors (last 5 min)", "timeseries", [
     ("increase(producer_delivery_failures_total[5m])", "Kafka delivery failures"),
 ], 12, 33, 12, 8)
 
+row("Disk", 41)
+panel("Database size", "timeseries", [("pipeline_database_size_bytes", "Postgres")], 0, 42, 12, 8, unit="bytes",
+      description="Retention drops daily partitions older than RETENTION_DAYS, so this should level off.")
+panel("Daily partitions", "stat", [("pipeline_trade_partitions", "")], 12, 42, 12, 8)
+
 dashboard = {
     "uid": "crypto-pipeline",
     "title": "Crypto streaming pipeline",

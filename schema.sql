@@ -2,7 +2,7 @@
 -- Existing databases: apply the files in migrations/ in order instead.
 
 CREATE TABLE IF NOT EXISTS trades (
-    id BIGSERIAL PRIMARY KEY,
+    id BIGSERIAL,
     symbol TEXT NOT NULL,
     trade_id BIGINT NOT NULL,
     trade_time TIMESTAMPTZ NOT NULL,
@@ -16,8 +16,12 @@ CREATE TABLE IF NOT EXISTS trades (
     received_at TIMESTAMPTZ,             -- when our producer received the trade (our clock)
     stored_at TIMESTAMPTZ,               -- when the storage consumer wrote it (same clock)
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    UNIQUE (symbol, trade_id)
-);
+    PRIMARY KEY (id, trade_time),
+    UNIQUE (symbol, trade_id, trade_time)   -- a trade's exchange timestamp never changes
+) PARTITION BY RANGE (trade_time);          -- one partition per day; retention.py creates and drops them
+
+-- Catches anything outside the daily partitions (e.g. before retention.py first runs)
+CREATE TABLE IF NOT EXISTS trades_default PARTITION OF trades DEFAULT;
 
 -- Missing trade-ID ranges found by gap_checker.py
 CREATE TABLE IF NOT EXISTS trade_gaps (

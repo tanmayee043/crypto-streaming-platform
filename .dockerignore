@@ -1,0 +1,14 @@
+venv/
+.git/
+.github/
+.env
+data/
+notes/
+results/
+tests/
+docs/
+observability/
+deploy/
+migrations/
+__pycache__/
+*.pyc

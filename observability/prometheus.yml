@@ -13,5 +13,7 @@ scrape_configs:
     static_configs: [{ targets: ["host.docker.internal:8003"] }]
   - job_name: gap_checker
     static_configs: [{ targets: ["host.docker.internal:8004"] }]
+  - job_name: retention
+    static_configs: [{ targets: ["host.docker.internal:8005"] }]
   - job_name: api
     static_configs: [{ targets: ["host.docker.internal:8000"] }]

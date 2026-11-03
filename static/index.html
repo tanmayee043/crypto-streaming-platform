@@ -929,7 +929,7 @@
             stopReplay(`Finished: ${d.trades.toLocaleString()} trades in ${d.seconds} s, ${total} anomalies flagged.`);
             announce(`Replay finished, ${total} anomalies flagged`);
         });
-        es.onerror = () => stopReplay('The replay stopped because the connection to the API was lost.');
+        es.onerror = () => stopReplay('The replay stopped: the connection was lost, or too many replays are running. Try again in a minute.');
     }
     function stopReplay(message) {
         if (state.replayStream) { state.replayStream.close(); state.replayStream = null; }
