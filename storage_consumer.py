@@ -53,17 +53,17 @@ END_TO_END = Histogram("pipeline_end_to_end_latency_seconds", "Producer receipt 
 
 # Delivery guarantee: offsets are committed only AFTER a batch is safely in Postgres.
 # If we crash before that, Kafka redelivers the batch on restart, and the upsert on
-# (symbol, trade_id) makes writing it twice harmless.
+# (symbol, trade_id, trade_time) makes writing it twice harmless (trades is partitioned by day,
+# so the key must include trade_time; a trade's exchange timestamp never changes).
 # At-least-once delivery + idempotent writes = effectively exactly-once rows.
 #
-# `xmax = 0` is only true for freshly inserted rows, so we can count how many messages
-# were redeliveries that the upsert absorbed.
+# `created_at = now()` is only true for rows inserted by this transaction (an updated row keeps
+# its older created_at), so we can count how many messages were redeliveries the upsert absorbed.
 UPSERT_SQL = """
     INSERT INTO trades (symbol, trade_id, trade_time, price, quantity, price_z, volume_z, is_anomaly, anomaly_type,
                         size_ratio, received_at, stored_at)
     VALUES %s
-    ON CONFLICT (symbol, trade_id) DO UPDATE SET
-        trade_time = EXCLUDED.trade_time,
+    ON CONFLICT (symbol, trade_id, trade_time) DO UPDATE SET
         price = EXCLUDED.price,
         quantity = EXCLUDED.quantity,
         price_z = EXCLUDED.price_z,
@@ -74,7 +74,7 @@ UPSERT_SQL = """
         -- keep the FIRST receive/store time, so a redelivery doesn't distort latency numbers
         received_at = COALESCE(trades.received_at, EXCLUDED.received_at),
         stored_at = COALESCE(trades.stored_at, EXCLUDED.stored_at)
-    RETURNING (xmax = 0) AS inserted
+    RETURNING (created_at = now()) AS inserted
 """
 
 
