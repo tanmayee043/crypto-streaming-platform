@@ -1,0 +1,23 @@
+# Caddy is the only public entrance. It gets and renews a free HTTPS certificate from
+# Let's Encrypt automatically for the address in SITE_ADDRESS, and redirects HTTP to HTTPS.
+{$SITE_ADDRESS} {
+	# internal only: never reachable from the internet
+	@private path /metrics /metrics/*
+	respond @private 404
+
+	# compress normal pages, but never the live streams (compression would hold events back)
+	@compressible not path /stream /replay/stream
+	encode @compressible gzip
+
+	reverse_proxy api:8000 {
+		flush_interval -1 # send Server-Sent Events immediately
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+}

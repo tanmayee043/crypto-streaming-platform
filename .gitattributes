@@ -1,0 +1,5 @@
+# These run on Linux (the VM), so they must keep Linux line endings even on a Windows checkout
+*.sh text eol=lf
+deploy/** text eol=lf
+docker-compose.prod.yaml text eol=lf
+Dockerfile text eol=lf
