@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# One-time setup of a fresh Oracle Ubuntu VM (see docs/deploy-oracle.md). Safe to run again.
+# One-time setup of a fresh Oracle Ubuntu VM. Safe to run again.
 #   bash setup-vm.sh yourname.duckdns.org
 set -euo pipefail
 
@@ -49,4 +49,4 @@ else
 fi
 
 echo
-echo "Done. Log out and back in once (so the docker group applies), then continue with the guide."
+echo "Done. Log out and back in once (so the docker group applies), then deploy."
