@@ -1,5 +1,5 @@
 # After CI passes on main: build the ARM image, push it to GitHub's registry, deploy to the VM.
-# The deploy job only runs once the repo variable DEPLOY_ENABLED is "true" (docs/deploy-oracle.md),
+# The deploy job only runs once the repo variable DEPLOY_ENABLED is "true",
 # so nothing goes anywhere until the VM is ready and you choose to turn it on.
 name: Deploy
 

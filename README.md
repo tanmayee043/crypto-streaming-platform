@@ -114,7 +114,7 @@ All of these are well inside the 2-second p95 target. Latency at 1,000 trades/s 
 
 ## Dashboard
 
-A single page (`static/index.html`, plain HTML/CSS/JS with Chart.js, served by FastAPI) built for a market-surveillance analyst, with its design system in [`DESIGN.md`](DESIGN.md) (adapted from Kraken's) and product context in [`PRODUCT.md`](PRODUCT.md).
+A single page (`static/index.html`, plain HTML/CSS/JS with Chart.js, served by FastAPI) built for a market-surveillance analyst.
 
 - **Live push:** `GET /stream` sends new trades, anomalies and health as Server-Sent Events. One background loop in the API reads new rows twice a second and fans them out to every open browser; a browser that reconnects catches up on anything it missed from the last row ID it saw.
 - **Price chart with anomaly markers** that differ by shape as well as colour (price ▲, size ◆, both ★).
@@ -141,7 +141,7 @@ docker compose --profile observability up -d     # Prometheus :9090, Grafana :30
 
 ## Deployment
 
-Designed to run 24/7 on a free Oracle Cloud ARM VM. Step-by-step: [`docs/deploy-oracle.md`](docs/deploy-oracle.md). Operating it: [`docs/runbook.md`](docs/runbook.md).
+Designed to run 24/7 on a free Oracle Cloud ARM VM. Operating it: [`docs/runbook.md`](docs/runbook.md).
 
 - **Only HTTPS is public.** [Caddy](deploy/Caddyfile) is the single entrance and handles certificates automatically. Kafka and Postgres publish no ports; Prometheus, Grafana and Jaeger are bound to the VM's localhost and reached through an SSH tunnel. `/metrics` is blocked at the entrance.
 - **Limits for a public demo:** per-IP rate limits on every endpoint and caps on concurrent streams and replays. There's nothing that spends a paid quota, so no login is needed; visitors get the read-only dashboard and replays.
@@ -270,10 +270,10 @@ alerts.py                Discord alerts for anomalies and SLO breaches
 kafka_helpers.py         offset, batching and dead-letter helpers shared by both consumers
 main.py                  FastAPI: REST, /stream (SSE), /health/pipeline, /replay, /metrics, /dashboard
 schema.sql, migrations/  database schema and upgrades for existing databases
-static/index.html        dashboard (DESIGN.md: design system, PRODUCT.md: who it's for)
+static/index.html        dashboard
 observability/           Prometheus config, Grafana provisioning and dashboard
 Dockerfile, docker-compose.prod.yaml, deploy/   production image, stack, Caddy, VM setup and deploy scripts
-docs/                    deployment guide, runbook, demo video script
+docs/runbook.md          how to operate the deployed system
 replays/                 recorded real trades for replay mode (10 Oct 2025 crash)
 scripts/                 recording, replay, model evaluation, crash tests, load test
 tests/                   unit and integration tests, sample trade file
