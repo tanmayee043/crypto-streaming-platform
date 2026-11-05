@@ -26,7 +26,7 @@ try:
             print(f"Consumer error: {msg.error()}")
             continue
 
-        trade = json.loads(msg.value().decode("utf-8"))
+        trade = json.loads((msg.value() or b"").decode("utf-8"))
         price = float(trade["p"])
         quantity = float(trade["q"])
         print(f"Price: {price:.2f}  Quantity: {quantity:.5f}")

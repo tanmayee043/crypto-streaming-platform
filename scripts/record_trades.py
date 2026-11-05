@@ -39,7 +39,7 @@ REST_PAGE = 1000  # max trades per REST call
 
 def check_ids(trades):
     """Per symbol: trades seen, ID range, and how many IDs in that range are missing."""
-    by_symbol = {}
+    by_symbol: dict = {}
     for t in trades:
         by_symbol.setdefault(t["s"], []).append(t["t"])
     report = {}
@@ -88,7 +88,7 @@ def first_trade_id_at(symbol, start_ms):
 
 
 def fetch_history(symbols, count, out, skip=0, start_ms=None, end_ms=None):
-    trades = []
+    trades: list = []
     for symbol in symbols:
         symbol = symbol.upper()
         if start_ms is not None:

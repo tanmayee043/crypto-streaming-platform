@@ -51,7 +51,7 @@ def v1_classify(price_z, vol_z, threshold=3.0):
 
 def run_v1(trades, window_size=30):
     """{(symbol, trade_id): anomaly_type} for every trade v1 scores."""
-    windows = {}
+    windows: dict = {}
     flags = {}
     for t in trades:
         window = windows.setdefault(t["s"], deque(maxlen=window_size))
@@ -66,7 +66,7 @@ def run_v1(trades, window_size=30):
 
 
 def run_v2(trades):
-    windows = {}
+    windows: dict = {}
     flags = {}
     for t in trades:
         window = windows.setdefault(t["s"], anomaly_detector.new_window())
@@ -80,7 +80,7 @@ def run_v2(trades):
 def plant_spikes(trades, seed):
     """Copy of `trades` with abnormal trades planted; returns (trades, {key: kind})."""
     rng = random.Random(seed)
-    by_symbol = {}
+    by_symbol: dict = {}
     for t in trades:
         by_symbol.setdefault(t["s"], []).append(t)
     planted = {}

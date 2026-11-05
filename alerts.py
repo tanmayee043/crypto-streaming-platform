@@ -8,18 +8,20 @@ import os
 from dotenv import load_dotenv
 load_dotenv()
 
+from service_setup import settings  # noqa: E402
+
 log = logging.getLogger("alerts")
 
 # Paste a Discord channel's webhook URL here (Channel settings -> Integrations -> Webhooks).
 # Leave it empty and alerts are only written to the log.
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "")
 # at most one anomaly message per this many seconds; anomalies in between are summarised
-ANOMALY_ALERT_INTERVAL_SECONDS = float(os.getenv("ANOMALY_ALERT_INTERVAL_SECONDS", "60"))
+ANOMALY_ALERT_INTERVAL_SECONDS = settings.anomaly_alert_interval_seconds
 
 # The service levels this pipeline promises (also on the dashboard and in Grafana)
-SLO_COMPLETENESS_PCT = float(os.getenv("SLO_COMPLETENESS_PCT", "99.9"))
-SLO_LATENCY_P95_SECONDS = float(os.getenv("SLO_LATENCY_P95_SECONDS", "2"))
-SLO_CONSUMER_LAG = int(os.getenv("SLO_CONSUMER_LAG", "1000"))
+SLO_COMPLETENESS_PCT = settings.slo_completeness_pct
+SLO_LATENCY_P95_SECONDS = settings.slo_latency_p95_seconds
+SLO_CONSUMER_LAG = settings.slo_consumer_lag
 
 
 def send(text):

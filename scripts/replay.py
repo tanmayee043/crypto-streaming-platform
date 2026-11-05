@@ -47,6 +47,10 @@ def replay(trades, topic, bootstrap, speed=None, rate=None, progress=True):
     producer = Producer({"bootstrap.servers": bootstrap, "enable.idempotence": True, "linger.ms": 5})
     failed = []
     schedule = send_times(trades, speed, rate)
+    def on_delivery(err, _msg):
+        if err:
+            failed.append(err)
+
     started = time.monotonic()
     for i, (trade, due) in enumerate(zip(trades, schedule, strict=True)):
         wait = due - (time.monotonic() - started)
@@ -57,7 +61,7 @@ def replay(trades, topic, bootstrap, speed=None, rate=None, progress=True):
         while True:
             try:
                 producer.produce(topic, key=message["s"].encode(), value=json.dumps(message).encode(),
-                                 on_delivery=lambda err, _msg: err and failed.append(err))
+                                 on_delivery=on_delivery)
                 break
             except BufferError:
                 producer.poll(0.5)  # local buffer full: let Kafka catch up
@@ -83,8 +87,8 @@ def main():
 
     trades = load_trades(args.file, args.limit)
     span = (trades[-1]["T"] - trades[0]["T"]) / 1000
-    pace = f"{args.rate:g} trades/s" if args.rate else (f"{args.speed:g}x" if args.speed else "max speed")
-    print(f"Replaying {len(trades)} trades ({span / 3600:.1f}h of market time) into '{args.topic}' at {pace}")
+    speed_text = f"{args.rate:g} trades/s" if args.rate else (f"{args.speed:g}x" if args.speed else "max speed")
+    print(f"Replaying {len(trades)} trades ({span / 3600:.1f}h of market time) into '{args.topic}' at {speed_text}")
     result = replay(trades, args.topic, os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092"),
                     args.speed, args.rate)
     print(f"Sent {result['sent']} trades in {result['seconds']}s ({result['rate']} trades/s), "

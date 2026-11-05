@@ -20,6 +20,7 @@ import alerts
 import anomaly_detector
 import gap_checker
 from rate_limit import RateLimitMiddleware
+from service_setup import postgres_args, settings
 from scripts.replay import load_trades, send_times
 
 load_dotenv()
@@ -34,10 +35,10 @@ HEALTH_SECONDS = 5      # how often pipeline health is recomputed and pushed
 KEEPALIVE_SECONDS = 15  # comment line so proxies don't close an idle stream
 
 # Limits for the public site: a free VM has to survive visitors (and bots)
-RATE_LIMIT_PER_MINUTE = int(os.getenv("RATE_LIMIT_PER_MINUTE", "300"))  # per IP, 0 turns it off
-MAX_STREAMS_PER_IP = int(os.getenv("MAX_STREAMS_PER_IP", "5"))
-MAX_REPLAYS_PER_IP = int(os.getenv("MAX_REPLAYS_PER_IP", "2"))
-MAX_REPLAYS_TOTAL = int(os.getenv("MAX_REPLAYS_TOTAL", "5"))  # replays use the most CPU
+RATE_LIMIT_PER_MINUTE = settings.rate_limit_per_minute  # per IP, 0 turns it off
+MAX_STREAMS_PER_IP = settings.max_streams_per_ip
+MAX_REPLAYS_PER_IP = settings.max_replays_per_ip
+MAX_REPLAYS_TOTAL = settings.max_replays_total  # replays use the most CPU
 
 # API metrics live in their own registry, so importing anomaly_detector (for replay mode)
 # doesn't make the API publish the detector's metrics as well
@@ -47,14 +48,7 @@ ALERTS_SENT = Counter("api_alerts_total", "Alerts sent", ["kind"], registry=API_
 
 
 def get_conn():
-    return psycopg2.connect(
-        host=os.getenv("POSTGRES_HOST", "localhost"),
-        port=int(os.environ["POSTGRES_PORT"]),
-        dbname=os.environ["POSTGRES_DB"],
-        user=os.environ["POSTGRES_USER"],
-        password=os.environ["POSTGRES_PASSWORD"],
-        cursor_factory=psycopg2.extras.RealDictCursor,
-    )
+    return psycopg2.connect(**postgres_args(), cursor_factory=psycopg2.extras.RealDictCursor)
 
 
 def query(sql, params=()):
@@ -88,7 +82,7 @@ TRADE_COLUMNS = ("id, symbol, trade_id, trade_time, price, quantity, price_z, si
 
 # --- live stream: one loop reads new rows and hands them to every open connection ---
 
-subscribers = set()
+subscribers: set = set()
 latest_health = None
 
 
@@ -133,7 +127,7 @@ async def broadcast_once(alerter, last_id, last_health):
 
 
 async def broadcaster():
-    alerter = alerts.Alerter(sender=lambda text: alerts.send(text) and ALERTS_SENT.labels("discord").inc())
+    alerter = alerts.Alerter(sender=lambda text: alerts.send(text) and ALERTS_SENT.labels("discord").inc())  # type: ignore[func-returns-value]
     last_id, last_health = None, 0.0
     while True:
         try:
@@ -146,6 +140,7 @@ async def broadcaster():
 
 @asynccontextmanager
 async def lifespan(app):
+    postgres_args()  # stop at startup, not on the first request, if a POSTGRES_* variable is missing
     task = asyncio.create_task(broadcaster())
     yield
     task.cancel()
@@ -154,8 +149,8 @@ async def lifespan(app):
 app = FastAPI(title="Crypto Market Streaming Platform", lifespan=lifespan)
 app.add_middleware(RateLimitMiddleware, per_minute=RATE_LIMIT_PER_MINUTE)
 
-open_streams = Tally()  # client IP -> open live streams
-open_replays = Tally()  # client IP -> running replays
+open_streams: Tally = Tally()  # client IP -> open live streams
+open_replays: Tally = Tally()  # client IP -> running replays
 
 
 def client_ip(request):
@@ -196,7 +191,7 @@ async def stream(request: Request, symbol: str | None = None, after_id: int | No
         raise HTTPException(429, detail="Too many open streams from this address.")
 
     async def events():
-        queue = asyncio.Queue(maxsize=2000)
+        queue: asyncio.Queue = asyncio.Queue(maxsize=2000)
         subscribers.add(queue)  # subscribe BEFORE catching up, so nothing slips between the two
         STREAM_CLIENTS.inc()
         open_streams[ip] += 1
@@ -411,7 +406,7 @@ def get_completeness(hours: float = 24):
 
 # --- replay mode: the same model, run in this process on a recorded file ---
 
-_replay_files = {}  # path -> (modified time, summary)
+_replay_files: dict = {}  # path -> (modified time, summary)
 
 
 def describe_file(path):
@@ -463,11 +458,13 @@ async def replay_stream(request: Request, file: str, speed: float = Query(100, g
 
 async def replay_events(request, trades, speed, symbol):
     """The replay itself: score each trade on schedule and yield Server-Sent Events."""
-    windows = {}
-    recent = {}  # symbol -> last 30 replayed rows, sent with each anomaly as its context
+    windows: dict = {}
+    recent: dict = {}  # symbol -> last 30 replayed rows, sent with each anomaly as its context
     schedule = send_times(trades, speed=speed)
     started = time.monotonic()
-    batch, flagged, last_flush = [], {}, time.monotonic()
+    batch: list = []
+    flagged: dict = {}
+    last_flush = time.monotonic()
     for i, (trade, due) in enumerate(zip(trades, schedule, strict=True)):
         wait = due - (time.monotonic() - started)
         if wait > 0:

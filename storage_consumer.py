@@ -14,14 +14,12 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from kafka_helpers import consume_batch, next_offsets, send_to_dead_letter  # noqa: E402
+from service_setup import postgres_args, settings, setup_logging, stop_after_batch_on_sigterm, stop_requested  # noqa: E402
 
-logging.basicConfig(
-    level=os.getenv("LOG_LEVEL", "INFO"),
-    format="%(asctime)s [%(levelname)s] %(message)s"
-)
+setup_logging()
 log = logging.getLogger("storage_consumer")
 
-KAFKA_BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
+KAFKA_BOOTSTRAP_SERVERS = settings.kafka_bootstrap_servers
 TOPIC = os.getenv("ANALYTICS_TOPIC", "trade-analytics")
 DEAD_LETTER_TOPIC = os.getenv("ANALYTICS_DLQ_TOPIC", "trade-analytics-dlq")
 GROUP_ID = os.getenv("STORAGE_GROUP_ID", "storage-writer")
@@ -29,11 +27,11 @@ GROUP_ID = os.getenv("STORAGE_GROUP_ID", "storage-writer")
 # immediately instead of waiting for a group rebalance
 GROUP_INSTANCE_ID = os.getenv("STORAGE_GROUP_INSTANCE_ID")
 
-BATCH_SIZE = int(os.getenv("STORAGE_BATCH_SIZE", "500"))
-BATCH_TIMEOUT_SECONDS = float(os.getenv("STORAGE_BATCH_TIMEOUT_SECONDS", "1.0"))
+BATCH_SIZE = settings.storage_batch_size
+BATCH_TIMEOUT_SECONDS = settings.storage_batch_timeout_seconds
 MAX_RETRY_BACKOFF_SECONDS = 30
 
-METRICS_INTERVAL_SECONDS = float(os.getenv("METRICS_INTERVAL_SECONDS", "60"))
+METRICS_INTERVAL_SECONDS = settings.metrics_interval_seconds
 METRICS_PORT = int(os.getenv("METRICS_PORT", "8003"))  # 0 turns the /metrics endpoint off
 # localhost only: Prometheus runs on this machine, and nothing else should reach the metrics
 METRICS_HOST = os.getenv("METRICS_HOST", "127.0.0.1")
@@ -93,13 +91,7 @@ def consumer_config():
 
 
 def connect_postgres():
-    return psycopg2.connect(
-        host=os.getenv("POSTGRES_HOST", "localhost"),
-        port=int(os.environ["POSTGRES_PORT"]),
-        dbname=os.environ["POSTGRES_DB"],
-        user=os.environ["POSTGRES_USER"],
-        password=os.environ["POSTGRES_PASSWORD"],
-    )
+    return psycopg2.connect(**postgres_args())
 
 
 def to_millis_datetime(ms):
@@ -159,7 +151,7 @@ def write_with_retry(conn, rows, reconnect=None, sleep=None):
 
 # --- metrics: end-to-end latency from Binance trade_time to this write ---
 write_count = 0
-latencies_ms = []
+latencies_ms: list = []
 last_metrics_log = time.time()
 
 def maybe_log_metrics():
@@ -246,6 +238,7 @@ def process_batch(consumer, conn, messages, producer):
 
 
 def main():
+    stop_after_batch_on_sigterm()
     if METRICS_PORT:
         start_http_server(METRICS_PORT, addr=METRICS_HOST)
     consumer = Consumer(consumer_config())
@@ -256,7 +249,7 @@ def main():
     log.info(f"Writing '{TOPIC}' to Postgres in batches of up to {BATCH_SIZE}...")
 
     try:
-        while True:
+        while not stop_requested.is_set():
             messages = consume_batch(consumer, BATCH_SIZE, BATCH_TIMEOUT_SECONDS)
             if messages:
                 conn = process_batch(consumer, conn, messages, producer)

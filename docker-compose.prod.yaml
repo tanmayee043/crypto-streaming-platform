@@ -19,6 +19,7 @@ x-service: &service
   environment: &service-env
     KAFKA_BOOTSTRAP_SERVERS: kafka:29092
     POSTGRES_HOST: postgres
+    LOG_FORMAT: json
     METRICS_HOST: 0.0.0.0   # inside Docker's private network only; no port is published
   depends_on:
     kafka-init: { condition: service_completed_successfully }

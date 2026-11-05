@@ -110,7 +110,11 @@ On a brand-new stack, the first 2–3 minutes can be slow: trades may take over 
 ```bash
 pip install -r requirements-dev.txt
 ruff check .
+ruff format --check .
+mypy .
 pytest                              # integration tests need Docker running
+playwright install chromium         # once, for the browser test
+pytest -m e2e                       # dashboard in a real browser; needs Docker running
 ```
 
 CI runs these plus shorter crash tests on every push and pull request. [docs/results.md](docs/results.md) has the commands for the full crash, model and load tests.
@@ -121,6 +125,7 @@ CI runs these plus shorter crash tests on every push and pull request. [docs/res
 producer.py, anomaly_detector.py, storage_consumer.py   the pipeline stages
 gap_checker.py, retention.py     completeness checks; daily Postgres partitions
 main.py, static/index.html       API and dashboard
+service_setup.py                 settings checks, logging and shutdown shared by the services
 alerts.py, rate_limit.py, kafka_helpers.py   Discord alerts, rate limits, shared Kafka helpers
 schema.sql, migrations/          database schema and upgrades
 observability/                   Prometheus and Grafana config
@@ -135,6 +140,7 @@ docs/                            results, design decisions, deployment, runbook
 
 - [Results and how they were measured](docs/results.md)
 - [Design decisions, limitations and next steps](docs/design-decisions.md)
+- [Architecture decision records](docs/adr/README.md)
 - [Deployment plan and what's been tested](docs/deployment.md)
 - [Runbook](docs/runbook.md)
 

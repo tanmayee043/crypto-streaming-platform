@@ -7,4 +7,16 @@ select = ["E", "F", "W", "B"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-markers = ["integration: needs Docker (starts a throwaway Postgres container with Testcontainers)"]
+addopts = "-m 'not e2e'"  # the browser test has its own CI job: pytest -m e2e
+markers = [
+    "integration: needs Docker (starts a throwaway Postgres container with Testcontainers)",
+    "e2e: needs Docker and a Playwright browser (playwright install chromium)",
+]
+
+[tool.mypy]
+python_version = "3.11"
+explicit_package_bases = true
+ignore_missing_imports = true
+check_untyped_defs = true
+plugins = ["pydantic.mypy"]
+exclude = '^(venv|data|results|notes)/'

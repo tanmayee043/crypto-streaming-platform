@@ -58,7 +58,7 @@ EVENT = re.compile(r"batch received|batch written|offsets committed")
 
 def expected_scores(trades):
     """What one uninterrupted run of the model gives for every trade."""
-    windows = {}
+    windows: dict = {}
     expected = {}
     for t in trades:
         window = windows.setdefault(t["s"], anomaly_detector.new_window())
@@ -145,7 +145,7 @@ def main():
         kwargs={"rate": args.rate, "progress": False}, daemon=True)
     feed.start()
     started = time.monotonic()
-    phases = Counter()
+    phases: Counter = Counter()
     detector = None
     try:
         for n in range(1, args.kills + 1):

@@ -83,7 +83,7 @@ def test_live_loop_pushes_new_rows_to_connected_clients(api, conn):
             pass
 
     async def run():
-        queue = asyncio.Queue()
+        queue: asyncio.Queue = asyncio.Queue()
         main.subscribers.add(queue)
         try:
             last_id, last_health = await main.broadcast_once(QuietAlerter(), None, 0.0)  # starts at the newest row

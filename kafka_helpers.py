@@ -5,7 +5,7 @@ from confluent_kafka import TopicPartition
 
 def next_offsets(messages):
     # Kafka's committed offset means "the next message I want", hence the + 1
-    highest = {}
+    highest: dict = {}
     for msg in messages:
         key = (msg.topic(), msg.partition())
         highest[key] = max(highest.get(key, -1), msg.offset())

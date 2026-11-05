@@ -38,7 +38,7 @@ def events():
 @pytest.fixture
 def written(monkeypatch, events):
     """Replaces the real Postgres write; set `fail_next` to make the next N writes fail."""
-    state = {"calls": [], "fail_next": 0, "raise": psycopg2.OperationalError}
+    state: dict = {"calls": [], "fail_next": 0, "raise": psycopg2.OperationalError}
 
     def fake_write_batch(conn, rows):
         state["calls"].append(list(rows))

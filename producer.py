@@ -12,13 +12,12 @@ import os
 from dotenv import load_dotenv
 load_dotenv()
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s"
-)
+from service_setup import exit_on_sigterm, settings, setup_logging  # noqa: E402
+
+setup_logging()
 log = logging.getLogger("producer")
 
-KAFKA_BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
+KAFKA_BOOTSTRAP_SERVERS = settings.kafka_bootstrap_servers
 TOPIC = os.getenv("TRADES_TOPIC", "crypto-trades")
 # comma-separated, e.g. "btcusdt,ethusdt,solusdt" (SYMBOL still works for a single pair)
 SYMBOLS = [s.strip().lower() for s in os.getenv("SYMBOLS", os.getenv("SYMBOL", "btcusdt")).split(",") if s.strip()]
@@ -109,6 +108,7 @@ async def run_with_reconnect():
 
 
 if __name__ == "__main__":
+    exit_on_sigterm()
     if METRICS_PORT:
         start_http_server(METRICS_PORT, addr=METRICS_HOST)
     try:

@@ -8,7 +8,7 @@ from pathlib import Path
 
 OUT = Path(__file__).resolve().parent / "grafana" / "dashboards" / "pipeline.json"
 DS = {"type": "prometheus", "uid": "prometheus"}
-panels = []
+panels: list = []
 next_id = 1
 
 
