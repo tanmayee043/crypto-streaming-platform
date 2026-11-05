@@ -4,7 +4,7 @@
 
 ## Context
 
-Live Binance.US traffic measured under 2 trades/s. The processing is simple: one rolling window per symbol, plus the delivery guarantee.
+Live Binance.US traffic is typically under 3 trades/s across four symbols, with short spikes around 6. The processing is simple: one rolling window per symbol, plus the delivery guarantee.
 
 ## Decision
 
