@@ -1,0 +1,44 @@
+# Tries to create the free Oracle VM every 30 minutes until a slot opens, then turns itself off
+# and opens a GitHub issue (which emails you). Does nothing until the repo variable GET_VM_ENABLED
+# is "true". Temporary: delete this and scripts/get_oracle_vm.py once the VM exists.
+name: Get VM
+
+on:
+  schedule:
+    - cron: "7,37 * * * *"
+  workflow_dispatch:   # also runnable by hand from the Actions tab
+
+permissions:
+  contents: read
+  issues: write
+  actions: write   # lets it turn itself off once the VM exists
+
+jobs:
+  try:
+    if: vars.GET_VM_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install --quiet oci==2.190.0
+      - name: Ask Oracle for the VM
+        id: attempt
+        env:
+          OCI_TENANCY: ${{ secrets.OCI_TENANCY }}
+          OCI_USER: ${{ secrets.OCI_USER }}
+          OCI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
+          OCI_PRIVATE_KEY: ${{ secrets.OCI_PRIVATE_KEY }}
+          OCI_REGION: ${{ secrets.OCI_REGION }}
+          SSH_PUBLIC_KEY: ${{ secrets.SSH_PUBLIC_KEY }}
+        run: python scripts/get_oracle_vm.py
+      - name: Tell you, and stop trying
+        if: steps.attempt.outputs.result == 'created' || steps.attempt.outputs.result == 'exists'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh issue create --title "Your Oracle VM is ready" \
+            --body "The job got a VM. Open the Oracle console, copy its public IP, delete the OCI API key, and continue with the deployment steps."
+          gh workflow disable get-vm.yml
