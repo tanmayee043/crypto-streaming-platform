@@ -45,6 +45,7 @@ from dotenv import load_dotenv
 ROOT = Path(__file__).resolve().parents[1]
 load_dotenv(ROOT / ".env")
 
+
 class Settings:
     """Connection details, read from the same env vars / .env as the services use."""
 
@@ -103,9 +104,7 @@ def drop_database(settings: Settings, db_name: str = DB_NAME) -> None:
 
 
 def create_topic(admin: AdminClient, topic: str, partitions: int) -> None:
-    futures = admin.create_topics(
-        [NewTopic(topic, num_partitions=partitions, replication_factor=1)]
-    )
+    futures = admin.create_topics([NewTopic(topic, num_partitions=partitions, replication_factor=1)])
     for future in futures.values():
         future.result(timeout=30)
 
@@ -214,9 +213,7 @@ def consumer_env(settings: Settings, topic: str, group: str, batch_size: int) ->
     return env
 
 
-def start_consumer(
-    env: dict[str, str], log_path: Path, script: str = "storage_consumer.py"
-) -> subprocess.Popen[bytes]:
+def start_consumer(env: dict[str, str], log_path: Path, script: str = "storage_consumer.py") -> subprocess.Popen[bytes]:
     log_file = log_path.open("wb")
     return subprocess.Popen(
         [sys.executable, script],
@@ -227,9 +224,7 @@ def start_consumer(
     )
 
 
-def wait_for_log(
-    proc: subprocess.Popen[bytes], log_path: Path, needle: str, timeout: float
-) -> None:
+def wait_for_log(proc: subprocess.Popen[bytes], log_path: Path, needle: str, timeout: float) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if needle in log_path.read_text(errors="replace"):
@@ -296,10 +291,7 @@ def verify(settings: Settings, feed: TradeFeed) -> dict[str, Any]:
     missing = feed.acked - stored.keys()
     unexpected = stored.keys() - feed.acked
     # prices are stored as exact NUMERIC, so compare against the exact decimal that was sent
-    mismatched = [
-        k for k in feed.acked & stored.keys()
-        if stored[k] != tuple(Decimal(str(v)) for v in feed.sent[k])
-    ]
+    mismatched = [k for k in feed.acked & stored.keys() if stored[k] != tuple(Decimal(str(v)) for v in feed.sent[k])]
     return {
         "trades_acknowledged_by_kafka": len(feed.acked),
         "trades_failed_to_produce": feed.failed,
@@ -398,8 +390,7 @@ def main() -> int:
             "kills": len(kills),
             "duration_seconds": round(time.monotonic() - started, 1),
             "kill_phases": dict(phases),
-            "rows_reupserted_after_redelivery": sum(k.rows_reupserted for k in kills)
-            + final_reupserted,
+            "rows_reupserted_after_redelivery": sum(k.rows_reupserted for k in kills) + final_reupserted,
             "settings": vars(args),
         }
     )
@@ -408,9 +399,7 @@ def main() -> int:
     result["passed"] = passed
 
     report = out_dir / "result.json"
-    report.write_text(
-        json.dumps({**result, "kill_log": [asdict(k) for k in kills]}, indent=2, default=str)
-    )
+    report.write_text(json.dumps({**result, "kill_log": [asdict(k) for k in kills]}, indent=2, default=str))
 
     print()
     print(f"Kills: {len(kills)} in {result['duration_seconds']}s")

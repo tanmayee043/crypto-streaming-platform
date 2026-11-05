@@ -47,6 +47,11 @@ def replay(trades, topic, bootstrap, speed=None, rate=None, progress=True):
     producer = Producer({"bootstrap.servers": bootstrap, "enable.idempotence": True, "linger.ms": 5})
     failed = []
     schedule = send_times(trades, speed, rate)
+
+    def on_delivery(err, _msg):
+        if err:
+            failed.append(err)
+
     started = time.monotonic()
     for i, (trade, due) in enumerate(zip(trades, schedule, strict=True)):
         wait = due - (time.monotonic() - started)
@@ -56,8 +61,9 @@ def replay(trades, topic, bootstrap, speed=None, rate=None, progress=True):
         message["received_at"] = time.time() * 1000
         while True:
             try:
-                producer.produce(topic, key=message["s"].encode(), value=json.dumps(message).encode(),
-                                 on_delivery=lambda err, _msg: err and failed.append(err))
+                producer.produce(
+                    topic, key=message["s"].encode(), value=json.dumps(message).encode(), on_delivery=on_delivery
+                )
                 break
             except BufferError:
                 producer.poll(0.5)  # local buffer full: let Kafka catch up
@@ -66,16 +72,21 @@ def replay(trades, topic, bootstrap, speed=None, rate=None, progress=True):
             print(f"  sent {i}/{len(trades)}")
     producer.flush(60)
     elapsed = time.monotonic() - started
-    return {"sent": len(trades) - len(failed), "failed": len(failed), "seconds": round(elapsed, 2),
-            "rate": round(len(trades) / elapsed, 1) if elapsed else None}
+    return {
+        "sent": len(trades) - len(failed),
+        "failed": len(failed),
+        "seconds": round(elapsed, 2),
+        "rate": round(len(trades) / elapsed, 1) if elapsed else None,
+    }
 
 
 def main():
     parser = argparse.ArgumentParser(description="Replay recorded trades into Kafka")
     parser.add_argument("file", type=Path)
     pace = parser.add_mutually_exclusive_group()
-    pace.add_argument("--speed", type=float, default=0,
-                      help="time multiplier, e.g. 10, 100, 1000 (0 = as fast as possible)")
+    pace.add_argument(
+        "--speed", type=float, default=0, help="time multiplier, e.g. 10, 100, 1000 (0 = as fast as possible)"
+    )
     pace.add_argument("--rate", type=float, help="fixed trades per second instead of original timing")
     parser.add_argument("--limit", type=int, help="only replay the first N trades")
     parser.add_argument("--topic", default=os.getenv("TRADES_TOPIC", "crypto-trades"))
@@ -83,12 +94,12 @@ def main():
 
     trades = load_trades(args.file, args.limit)
     span = (trades[-1]["T"] - trades[0]["T"]) / 1000
-    pace = f"{args.rate:g} trades/s" if args.rate else (f"{args.speed:g}x" if args.speed else "max speed")
-    print(f"Replaying {len(trades)} trades ({span / 3600:.1f}h of market time) into '{args.topic}' at {pace}")
-    result = replay(trades, args.topic, os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092"),
-                    args.speed, args.rate)
-    print(f"Sent {result['sent']} trades in {result['seconds']}s ({result['rate']} trades/s), "
-          f"{result['failed']} failed")
+    speed_text = f"{args.rate:g} trades/s" if args.rate else (f"{args.speed:g}x" if args.speed else "max speed")
+    print(f"Replaying {len(trades)} trades ({span / 3600:.1f}h of market time) into '{args.topic}' at {speed_text}")
+    result = replay(trades, args.topic, os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092"), args.speed, args.rate)
+    print(
+        f"Sent {result['sent']} trades in {result['seconds']}s ({result['rate']} trades/s), {result['failed']} failed"
+    )
 
 
 if __name__ == "__main__":

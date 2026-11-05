@@ -18,8 +18,14 @@ def trade(symbol, trade_id, t=0):
 def test_check_ids_counts_missing_duplicate_and_out_of_order_ids():
     trades = [trade("BTCUSDT", i) for i in (1, 2, 3, 5, 5, 4, 8)] + [trade("ETHUSDT", i) for i in (10, 11)]
     report = check_ids(trades)
-    assert report["BTCUSDT"] == {"trades": 7, "first_id": 1, "last_id": 8, "missing": 2,
-                                 "duplicates": 1, "out_of_order": 1}
+    assert report["BTCUSDT"] == {
+        "trades": 7,
+        "first_id": 1,
+        "last_id": 8,
+        "missing": 2,
+        "duplicates": 1,
+        "out_of_order": 1,
+    }
     assert report["ETHUSDT"]["missing"] == 0
 
 

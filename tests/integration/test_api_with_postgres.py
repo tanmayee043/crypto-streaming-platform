@@ -18,9 +18,13 @@ pytestmark = pytest.mark.integration
 @pytest.fixture
 def api(postgres_url, conn, monkeypatch):
     url = urlparse(postgres_url)
-    for key, value in {"POSTGRES_HOST": url.hostname, "POSTGRES_PORT": str(url.port),
-                       "POSTGRES_DB": url.path.lstrip("/"), "POSTGRES_USER": url.username,
-                       "POSTGRES_PASSWORD": url.password}.items():
+    for key, value in {
+        "POSTGRES_HOST": url.hostname,
+        "POSTGRES_PORT": str(url.port),
+        "POSTGRES_DB": url.path.lstrip("/"),
+        "POSTGRES_USER": url.username,
+        "POSTGRES_PASSWORD": url.password,
+    }.items():
         monkeypatch.setenv(key, value)
     monkeypatch.setattr(gap_checker, "consumer_lag", lambda groups=None: {})  # no Kafka in this test
     monkeypatch.setattr(main, "latest_health", None)
@@ -36,8 +40,12 @@ def anomaly(trade_id, symbol="BTCUSDT", kind="price"):
 
 
 def test_history_filters_and_cursor_pagination(api, conn):
-    store(conn, [make_record(i) for i in range(1, 6)]
-          + [anomaly(i) for i in range(6, 11)] + [anomaly(20, symbol="ETHUSDT", kind="volume")])
+    store(
+        conn,
+        [make_record(i) for i in range(1, 6)]
+        + [anomaly(i) for i in range(6, 11)]
+        + [anomaly(20, symbol="ETHUSDT", kind="volume")],
+    )
     assert api.get("/anomalies/count").json()["count"] == 6
     assert api.get("/anomalies/count?symbol=BTCUSDT&type=price").json()["count"] == 5
     assert [r["symbol"] for r in api.get("/anomalies?type=volume").json()] == ["ETHUSDT"]
@@ -83,7 +91,7 @@ def test_live_loop_pushes_new_rows_to_connected_clients(api, conn):
             pass
 
     async def run():
-        queue = asyncio.Queue()
+        queue: asyncio.Queue = asyncio.Queue()
         main.subscribers.add(queue)
         try:
             last_id, last_health = await main.broadcast_once(QuietAlerter(), None, 0.0)  # starts at the newest row

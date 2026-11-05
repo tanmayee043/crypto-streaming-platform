@@ -51,7 +51,7 @@ def v1_classify(price_z, vol_z, threshold=3.0):
 
 def run_v1(trades, window_size=30):
     """{(symbol, trade_id): anomaly_type} for every trade v1 scores."""
-    windows = {}
+    windows: dict = {}
     flags = {}
     for t in trades:
         window = windows.setdefault(t["s"], deque(maxlen=window_size))
@@ -66,7 +66,7 @@ def run_v1(trades, window_size=30):
 
 
 def run_v2(trades):
-    windows = {}
+    windows: dict = {}
     flags = {}
     for t in trades:
         window = windows.setdefault(t["s"], anomaly_detector.new_window())
@@ -80,7 +80,7 @@ def run_v2(trades):
 def plant_spikes(trades, seed):
     """Copy of `trades` with abnormal trades planted; returns (trades, {key: kind})."""
     rng = random.Random(seed)
-    by_symbol = {}
+    by_symbol: dict = {}
     for t in trades:
         by_symbol.setdefault(t["s"], []).append(t)
     planted = {}
@@ -131,14 +131,21 @@ def main():
 
     trades = [json.loads(line) for line in args.file.open()]
     spiked, planted = plant_spikes(trades, args.seed)
-    print(f"{args.file}: {len(trades)} real trades, symbols {sorted({t['s'] for t in trades})}, "
-          f"{len(planted)} planted spikes\n")
+    print(
+        f"{args.file}: {len(trades)} real trades, symbols {sorted({t['s'] for t in trades})}, "
+        f"{len(planted)} planted spikes\n"
+    )
     print(f"{'model':<44} {'flag rate':>7} {'price spikes':>13} {'size spikes':>13}")
     evaluate("v1: raw price/size, mean/stdev, 30 trades", run_v1, trades, spiked, planted)
-    evaluate(f"v2: log return z>{anomaly_detector.PRICE_Z_THRESHOLD:g}, "
-             f"size>={anomaly_detector.SIZE_RATIO_THRESHOLD:g}x median, "
-             f"{anomaly_detector.WINDOW_SIZE} trades",
-             run_v2, trades, spiked, planted)
+    evaluate(
+        f"v2: log return z>{anomaly_detector.PRICE_Z_THRESHOLD:g}, "
+        f"size>={anomaly_detector.SIZE_RATIO_THRESHOLD:g}x median, "
+        f"{anomaly_detector.WINDOW_SIZE} trades",
+        run_v2,
+        trades,
+        spiked,
+        planted,
+    )
 
 
 if __name__ == "__main__":

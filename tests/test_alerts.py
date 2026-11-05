@@ -8,13 +8,22 @@ import alerts
 
 
 def anomaly(trade_id, kind="price"):
-    return {"symbol": "BTCUSDT", "trade_id": trade_id, "price": 65000.5, "anomaly_type": kind,
-            "price_z": 7.2, "size_ratio": 1.5}
+    return {
+        "symbol": "BTCUSDT",
+        "trade_id": trade_id,
+        "price": 65000.5,
+        "anomaly_type": kind,
+        "price_z": 7.2,
+        "size_ratio": 1.5,
+    }
 
 
 def healthy(**overrides):
-    health = {"completeness": [{"symbol": "BTCUSDT", "completeness_pct": 100.0}],
-              "latency_ms": {"p95": 120.0}, "consumer_lag": [{"group": "storage-writer", "messages": 3}]}
+    health = {
+        "completeness": [{"symbol": "BTCUSDT", "completeness_pct": 100.0}],
+        "latency_ms": {"p95": 120.0},
+        "consumer_lag": [{"group": "storage-writer", "messages": 3}],
+    }
     health.update(overrides)
     return health
 
@@ -72,10 +81,12 @@ def test_slo_breach_is_reported_once_and_recovery_once(alerter, sent):
 
 
 def test_each_slo_is_checked():
-    breaches = alerts.slo_breaches(healthy(
-        completeness=[{"symbol": "ETHUSDT", "completeness_pct": 99.0}],
-        consumer_lag=[{"group": "crypto-anomaly-detector", "messages": 5000}],
-    ))
+    breaches = alerts.slo_breaches(
+        healthy(
+            completeness=[{"symbol": "ETHUSDT", "completeness_pct": 99.0}],
+            consumer_lag=[{"group": "crypto-anomaly-detector", "messages": 5000}],
+        )
+    )
     assert set(breaches) == {"completeness:ETHUSDT", "lag:crypto-anomaly-detector"}
     assert alerts.slo_breaches(healthy()) == {}
 

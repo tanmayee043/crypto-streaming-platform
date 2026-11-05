@@ -25,7 +25,7 @@ class TokenBucket:
         allowed = tokens >= 1
         self.buckets[ip] = (tokens - 1 if allowed else tokens, now)
         if len(self.buckets) > MAX_TRACKED_IPS:  # keep memory bounded: forget the longest-idle half
-            for old in sorted(self.buckets, key=lambda k: self.buckets[k][1])[:MAX_TRACKED_IPS // 2]:
+            for old in sorted(self.buckets, key=lambda k: self.buckets[k][1])[: MAX_TRACKED_IPS // 2]:
                 del self.buckets[old]
         return allowed
 
@@ -48,6 +48,11 @@ class RateLimitMiddleware:
 
 async def too_many_requests(send, message):
     body = json.dumps({"detail": message}).encode()
-    await send({"type": "http.response.start", "status": 429,
-                "headers": [(b"content-type", b"application/json"), (b"retry-after", b"30")]})
+    await send(
+        {
+            "type": "http.response.start",
+            "status": 429,
+            "headers": [(b"content-type", b"application/json"), (b"retry-after", b"30")],
+        }
+    )
     await send({"type": "http.response.body", "body": body})

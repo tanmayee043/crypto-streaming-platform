@@ -17,8 +17,16 @@ def client():
 
 
 def row(**overrides):
-    base = {"symbol": "BTCUSDT", "trade_id": 10, "price": Decimal("65650.00"), "price_z": 7.5,
-            "size_ratio": 2.0, "volume_z": None, "is_anomaly": True, "anomaly_type": "price"}
+    base = {
+        "symbol": "BTCUSDT",
+        "trade_id": 10,
+        "price": Decimal("65650.00"),
+        "price_z": 7.5,
+        "size_ratio": 2.0,
+        "volume_z": None,
+        "is_anomaly": True,
+        "anomaly_type": "price",
+    }
     base.update(overrides)
     return base
 

@@ -11,17 +11,16 @@ import time
 
 import os
 from dotenv import load_dotenv
+
 load_dotenv()
 
 from kafka_helpers import consume_batch, next_offsets, send_to_dead_letter  # noqa: E402
+from service_setup import postgres_args, settings, setup_logging, stop_after_batch_on_sigterm, stop_requested  # noqa: E402
 
-logging.basicConfig(
-    level=os.getenv("LOG_LEVEL", "INFO"),
-    format="%(asctime)s [%(levelname)s] %(message)s"
-)
+setup_logging()
 log = logging.getLogger("storage_consumer")
 
-KAFKA_BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
+KAFKA_BOOTSTRAP_SERVERS = settings.kafka_bootstrap_servers
 TOPIC = os.getenv("ANALYTICS_TOPIC", "trade-analytics")
 DEAD_LETTER_TOPIC = os.getenv("ANALYTICS_DLQ_TOPIC", "trade-analytics-dlq")
 GROUP_ID = os.getenv("STORAGE_GROUP_ID", "storage-writer")
@@ -29,11 +28,11 @@ GROUP_ID = os.getenv("STORAGE_GROUP_ID", "storage-writer")
 # immediately instead of waiting for a group rebalance
 GROUP_INSTANCE_ID = os.getenv("STORAGE_GROUP_INSTANCE_ID")
 
-BATCH_SIZE = int(os.getenv("STORAGE_BATCH_SIZE", "500"))
-BATCH_TIMEOUT_SECONDS = float(os.getenv("STORAGE_BATCH_TIMEOUT_SECONDS", "1.0"))
+BATCH_SIZE = settings.storage_batch_size
+BATCH_TIMEOUT_SECONDS = settings.storage_batch_timeout_seconds
 MAX_RETRY_BACKOFF_SECONDS = 30
 
-METRICS_INTERVAL_SECONDS = float(os.getenv("METRICS_INTERVAL_SECONDS", "60"))
+METRICS_INTERVAL_SECONDS = settings.metrics_interval_seconds
 METRICS_PORT = int(os.getenv("METRICS_PORT", "8003"))  # 0 turns the /metrics endpoint off
 # localhost only: Prometheus runs on this machine, and nothing else should reach the metrics
 METRICS_HOST = os.getenv("METRICS_HOST", "127.0.0.1")
@@ -46,10 +45,12 @@ DEAD_LETTERS = Counter("storage_dead_letters_total", "Messages sent to the dead-
 WRITE_RETRIES = Counter("storage_write_retries_total", "Failed Postgres writes that were retried")
 WRITE_SECONDS = Histogram("storage_write_seconds", "Time to upsert one batch", buckets=LATENCY_BUCKETS)
 # stage 2: the detector's result reached Kafka -> the row is stored
-STAGE_LATENCY = Histogram("storage_stage_latency_seconds", "Detector result in Kafka to row stored",
-                          buckets=LATENCY_BUCKETS)
-END_TO_END = Histogram("pipeline_end_to_end_latency_seconds", "Producer receipt to row stored (same clock)",
-                       buckets=LATENCY_BUCKETS)
+STAGE_LATENCY = Histogram(
+    "storage_stage_latency_seconds", "Detector result in Kafka to row stored", buckets=LATENCY_BUCKETS
+)
+END_TO_END = Histogram(
+    "pipeline_end_to_end_latency_seconds", "Producer receipt to row stored (same clock)", buckets=LATENCY_BUCKETS
+)
 
 # Delivery guarantee: offsets are committed only AFTER a batch is safely in Postgres.
 # If we crash before that, Kafka redelivers the batch on restart, and the upsert on
@@ -93,13 +94,7 @@ def consumer_config():
 
 
 def connect_postgres():
-    return psycopg2.connect(
-        host=os.getenv("POSTGRES_HOST", "localhost"),
-        port=int(os.environ["POSTGRES_PORT"]),
-        dbname=os.environ["POSTGRES_DB"],
-        user=os.environ["POSTGRES_USER"],
-        password=os.environ["POSTGRES_PASSWORD"],
-    )
+    return psycopg2.connect(**postgres_args())
 
 
 def to_millis_datetime(ms):
@@ -109,9 +104,20 @@ def to_millis_datetime(ms):
 def to_row(r, stored_at=None):
     trade_time = to_millis_datetime(r["trade_time"])
     # Decimal(str(...)) keeps the price exactly as sent (e.g. 65000.01, not 65000.0100000000020)
-    return (r["symbol"], int(r["trade_id"]), trade_time, Decimal(str(r["price"])), Decimal(str(r["quantity"])),
-            r["price_z"], r.get("volume_z"), r["is_anomaly"], r["anomaly_type"],
-            r.get("size_ratio"), to_millis_datetime(r.get("received_at")), stored_at)
+    return (
+        r["symbol"],
+        int(r["trade_id"]),
+        trade_time,
+        Decimal(str(r["price"])),
+        Decimal(str(r["quantity"])),
+        r["price_z"],
+        r.get("volume_z"),
+        r["is_anomaly"],
+        r["anomaly_type"],
+        r.get("size_ratio"),
+        to_millis_datetime(r.get("received_at")),
+        stored_at,
+    )
 
 
 def dedupe_rows(rows):
@@ -159,8 +165,9 @@ def write_with_retry(conn, rows, reconnect=None, sleep=None):
 
 # --- metrics: end-to-end latency from Binance trade_time to this write ---
 write_count = 0
-latencies_ms = []
+latencies_ms: list = []
 last_metrics_log = time.time()
+
 
 def maybe_log_metrics():
     global write_count, latencies_ms, last_metrics_log
@@ -171,10 +178,7 @@ def maybe_log_metrics():
             latencies_ms.sort()
             p50 = latencies_ms[len(latencies_ms) // 2]
             p95 = latencies_ms[int(len(latencies_ms) * 0.95)]
-            log.info(
-                f"Wrote {write_count} rows in {elapsed:.0f}s | "
-                f"latency p50={p50:.0f}ms p95={p95:.0f}ms"
-            )
+            log.info(f"Wrote {write_count} rows in {elapsed:.0f}s | latency p50={p50:.0f}ms p95={p95:.0f}ms")
         write_count = 0
         latencies_ms = []
         last_metrics_log = now
@@ -246,6 +250,7 @@ def process_batch(consumer, conn, messages, producer):
 
 
 def main():
+    stop_after_batch_on_sigterm()
     if METRICS_PORT:
         start_http_server(METRICS_PORT, addr=METRICS_HOST)
     consumer = Consumer(consumer_config())
@@ -256,7 +261,7 @@ def main():
     log.info(f"Writing '{TOPIC}' to Postgres in batches of up to {BATCH_SIZE}...")
 
     try:
-        while True:
+        while not stop_requested.is_set():
             messages = consume_batch(consumer, BATCH_SIZE, BATCH_TIMEOUT_SECONDS)
             if messages:
                 conn = process_batch(consumer, conn, messages, producer)

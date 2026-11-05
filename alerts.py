@@ -6,7 +6,10 @@ import time
 
 import os
 from dotenv import load_dotenv
+
 load_dotenv()
+
+from service_setup import settings  # noqa: E402
 
 log = logging.getLogger("alerts")
 
@@ -14,12 +17,12 @@ log = logging.getLogger("alerts")
 # Leave it empty and alerts are only written to the log.
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "")
 # at most one anomaly message per this many seconds; anomalies in between are summarised
-ANOMALY_ALERT_INTERVAL_SECONDS = float(os.getenv("ANOMALY_ALERT_INTERVAL_SECONDS", "60"))
+ANOMALY_ALERT_INTERVAL_SECONDS = settings.anomaly_alert_interval_seconds
 
 # The service levels this pipeline promises (also on the dashboard and in Grafana)
-SLO_COMPLETENESS_PCT = float(os.getenv("SLO_COMPLETENESS_PCT", "99.9"))
-SLO_LATENCY_P95_SECONDS = float(os.getenv("SLO_LATENCY_P95_SECONDS", "2"))
-SLO_CONSUMER_LAG = int(os.getenv("SLO_CONSUMER_LAG", "1000"))
+SLO_COMPLETENESS_PCT = settings.slo_completeness_pct
+SLO_LATENCY_P95_SECONDS = settings.slo_latency_p95_seconds
+SLO_CONSUMER_LAG = settings.slo_consumer_lag
 
 
 def send(text):
@@ -56,15 +59,16 @@ def slo_breaches(health):
     for symbol in health.get("completeness", []):
         if symbol["completeness_pct"] < SLO_COMPLETENESS_PCT:
             breaches[f"completeness:{symbol['symbol']}"] = (
-                f"{symbol['symbol']} completeness {symbol['completeness_pct']:.2f}% "
-                f"(target {SLO_COMPLETENESS_PCT}%)")
+                f"{symbol['symbol']} completeness {symbol['completeness_pct']:.2f}% (target {SLO_COMPLETENESS_PCT}%)"
+            )
     p95 = (health.get("latency_ms") or {}).get("p95")
     if p95 is not None and p95 / 1000 > SLO_LATENCY_P95_SECONDS:
         breaches["latency"] = f"p95 latency {p95 / 1000:.1f}s (target {SLO_LATENCY_P95_SECONDS:g}s)"
     for lag in health.get("consumer_lag", []):
         if lag["messages"] > SLO_CONSUMER_LAG:
             breaches[f"lag:{lag['group']}"] = (
-                f"{lag['group']} is {lag['messages']} messages behind (target < {SLO_CONSUMER_LAG})")
+                f"{lag['group']} is {lag['messages']} messages behind (target < {SLO_CONSUMER_LAG})"
+            )
     return breaches
 
 

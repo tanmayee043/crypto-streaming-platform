@@ -58,13 +58,12 @@ EVENT = re.compile(r"batch received|batch written|offsets committed")
 
 def expected_scores(trades):
     """What one uninterrupted run of the model gives for every trade."""
-    windows = {}
+    windows: dict = {}
     expected = {}
     for t in trades:
         window = windows.setdefault(t["s"], anomaly_detector.new_window())
         price_z, size_ratio = anomaly_detector.score_trade(window, float(t["p"]), float(t["q"]))
-        expected[(t["s"], t["t"])] = (price_z, size_ratio,
-                                      anomaly_detector.classify_anomaly(price_z, size_ratio))
+        expected[(t["s"], t["t"])] = (price_z, size_ratio, anomaly_detector.classify_anomaly(price_z, size_ratio))
     return expected
 
 
@@ -84,8 +83,11 @@ def verify(settings, trades):
     expected = expected_scores(trades)
     counts = Counter((s, t) for s, t, *_ in rows)
     stored = {(s, t): (pz, sr, at) for s, t, pz, sr, at in rows}
-    wrong = [k for k, (pz, sr, at) in stored.items() if k in expected and not (
-        same(pz, expected[k][0]) and same(sr, expected[k][1]) and at == expected[k][2])]
+    wrong = [
+        k
+        for k, (pz, sr, at) in stored.items()
+        if k in expected and not (same(pz, expected[k][0]) and same(sr, expected[k][1]) and at == expected[k][2])
+    ]
     return {
         "trades_in_file": len(expected),
         "rows_in_postgres": len(rows),
@@ -116,8 +118,10 @@ def main():
     out_dir = ROOT / "results" / f"detector-crash-test-{run_id}"
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"Detector crash test {run_id}: {len(trades)} trades from {args.file.name} at "
-          f"{args.rate:g}/s, {args.kills} kills")
+    print(
+        f"Detector crash test {run_id}: {len(trades)} trades from {args.file.name} at "
+        f"{args.rate:g}/s, {args.kills} kills"
+    )
     setup_database(settings)
     admin = AdminClient({"bootstrap.servers": settings.kafka_bootstrap_servers})
     for topic in (trades_topic, analytics_topic, f"{trades_topic}-dlq", f"{analytics_topic}-dlq"):
@@ -134,18 +138,26 @@ def main():
         "METRICS_PORT": "0",  # several copies may run at once; no /metrics port clashes
     }
     import os
-    detector_env = {**os.environ, **common, "DETECTOR_GROUP_ID": detector_group,
-                    "DETECTOR_GROUP_INSTANCE_ID": "crash-test-detector", "LOG_LEVEL": "DEBUG"}
-    storage_env = {**os.environ, **common, "STORAGE_GROUP_ID": storage_group,
-                   "STORAGE_BATCH_TIMEOUT_SECONDS": "0.5"}
+
+    detector_env = {
+        **os.environ,
+        **common,
+        "DETECTOR_GROUP_ID": detector_group,
+        "DETECTOR_GROUP_INSTANCE_ID": "crash-test-detector",
+        "LOG_LEVEL": "DEBUG",
+    }
+    storage_env = {**os.environ, **common, "STORAGE_GROUP_ID": storage_group, "STORAGE_BATCH_TIMEOUT_SECONDS": "0.5"}
 
     storage = start_consumer(storage_env, out_dir / "storage.log")
     feed = threading.Thread(
-        target=replay, args=(trades, trades_topic, settings.kafka_bootstrap_servers),
-        kwargs={"rate": args.rate, "progress": False}, daemon=True)
+        target=replay,
+        args=(trades, trades_topic, settings.kafka_bootstrap_servers),
+        kwargs={"rate": args.rate, "progress": False},
+        daemon=True,
+    )
     feed.start()
     started = time.monotonic()
-    phases = Counter()
+    phases: Counter = Counter()
     detector = None
     try:
         for n in range(1, args.kills + 1):
@@ -180,9 +192,15 @@ def main():
         admin.delete_topics([trades_topic, analytics_topic, f"{trades_topic}-dlq", f"{analytics_topic}-dlq"])
         drop_database(settings)
 
-    result.update({"run_id": run_id, "kills": sum(phases.values()), "kill_phases": dict(phases),
-                   "duration_seconds": round(time.monotonic() - started, 1), "settings": {
-                       k: str(v) for k, v in vars(args).items()}})
+    result.update(
+        {
+            "run_id": run_id,
+            "kills": sum(phases.values()),
+            "kill_phases": dict(phases),
+            "duration_seconds": round(time.monotonic() - started, 1),
+            "settings": {k: str(v) for k, v in vars(args).items()},
+        }
+    )
     passed = result["missing"] == 0 and result["duplicates"] == 0 and result["wrong_scores"] == 0
     result["passed"] = passed
     (out_dir / "result.json").write_text(json.dumps(result, indent=2))

@@ -9,12 +9,12 @@ from datetime import datetime, timedelta, timezone
 
 import os
 from dotenv import load_dotenv
+
 load_dotenv()
 
-logging.basicConfig(
-    level=os.getenv("LOG_LEVEL", "INFO"),
-    format="%(asctime)s [%(levelname)s] %(message)s"
-)
+from service_setup import exit_on_sigterm, postgres_args, settings, setup_logging  # noqa: E402
+
+setup_logging()
 log = logging.getLogger("retention")
 
 # Keeps the database from filling the disk. trades is partitioned by day, so this service:
@@ -22,9 +22,9 @@ log = logging.getLogger("retention")
 # - drops whole partitions older than RETENTION_DAYS (instant, and frees the disk space),
 # - deletes old rows from the catch-all default partition.
 
-RETENTION_DAYS = int(os.getenv("RETENTION_DAYS", "90"))
+RETENTION_DAYS = settings.retention_days
 DAYS_AHEAD = 3
-CHECK_INTERVAL_SECONDS = float(os.getenv("RETENTION_INTERVAL_SECONDS", "3600"))
+CHECK_INTERVAL_SECONDS = settings.retention_interval_seconds
 METRICS_PORT = int(os.getenv("METRICS_PORT", "8005"))  # 0 turns the /metrics endpoint off
 METRICS_HOST = os.getenv("METRICS_HOST", "127.0.0.1")
 
@@ -35,13 +35,7 @@ PARTITION_NAME = re.compile(r"^trades_(\d{8})$")
 
 
 def connect_postgres():
-    return psycopg2.connect(
-        host=os.getenv("POSTGRES_HOST", "localhost"),
-        port=int(os.environ["POSTGRES_PORT"]),
-        dbname=os.environ["POSTGRES_DB"],
-        user=os.environ["POSTGRES_USER"],
-        password=os.environ["POSTGRES_PASSWORD"],
-    )
+    return psycopg2.connect(**postgres_args())
 
 
 def utc_midnight(day):
@@ -72,8 +66,10 @@ def ensure_partitions(conn, today, days_ahead=DAYS_AHEAD):
         name = f"trades_{day:%Y%m%d}"
         try:
             with conn, conn.cursor() as cur:
-                cur.execute(f"CREATE TABLE {name} PARTITION OF trades FOR VALUES FROM (%s) TO (%s)",
-                            (utc_midnight(day), utc_midnight(day + timedelta(days=1))))
+                cur.execute(
+                    f"CREATE TABLE {name} PARTITION OF trades FOR VALUES FROM (%s) TO (%s)",
+                    (utc_midnight(day), utc_midnight(day + timedelta(days=1))),
+                )
             created.append(name)
         except psycopg2.errors.CheckViolation:
             # That day's rows are already in the default partition (the service was down over
@@ -116,9 +112,11 @@ def run_once(conn, today=None):
     DATABASE_BYTES.set(size)
     PARTITIONS.set(len(daily_partitions(conn)))
     conn.rollback()
-    log.info(f"Partitions: created {created or 'none'}, dropped {dropped or 'none'}; "
-             f"{deleted} old default rows deleted; database is {size / 1_000_000:.0f} MB "
-             f"(keeping {RETENTION_DAYS} days)")
+    log.info(
+        f"Partitions: created {created or 'none'}, dropped {dropped or 'none'}; "
+        f"{deleted} old default rows deleted; database is {size / 1_000_000:.0f} MB "
+        f"(keeping {RETENTION_DAYS} days)"
+    )
     return created, dropped
 
 
@@ -127,6 +125,7 @@ def main():
     parser.add_argument("--once", action="store_true", help="run once and exit")
     args = parser.parse_args()
 
+    exit_on_sigterm()
     if METRICS_PORT and not args.once:
         start_http_server(METRICS_PORT, addr=METRICS_HOST)
     conn = None

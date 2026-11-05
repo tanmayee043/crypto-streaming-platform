@@ -8,12 +8,12 @@ import time
 
 import os
 from dotenv import load_dotenv
+
 load_dotenv()
 
-logging.basicConfig(
-    level=os.getenv("LOG_LEVEL", "INFO"),
-    format="%(asctime)s [%(levelname)s] %(message)s"
-)
+from service_setup import exit_on_sigterm, postgres_args, settings, setup_logging  # noqa: E402
+
+setup_logging()
 log = logging.getLogger("gap_checker")
 
 # Binance trade IDs are sequential per symbol (checked on 120,000 REST trades and a live
@@ -21,13 +21,13 @@ log = logging.getLogger("gap_checker")
 # one we stored should be in the table. Any missing ID is a trade the pipeline lost, wherever
 # it was lost (WebSocket, producer, detector or storage), because we check the end result.
 
-CHECK_INTERVAL_SECONDS = float(os.getenv("GAP_CHECK_INTERVAL_SECONDS", "15"))
-LOOKBACK_HOURS = float(os.getenv("GAP_CHECK_LOOKBACK_HOURS", "24"))
+CHECK_INTERVAL_SECONDS = settings.gap_check_interval_seconds
+LOOKBACK_HOURS = settings.gap_check_lookback_hours
 METRICS_PORT = int(os.getenv("METRICS_PORT", "8004"))  # 0 turns the /metrics endpoint off
 # localhost only: Prometheus runs on this machine, and nothing else should reach the metrics
 METRICS_HOST = os.getenv("METRICS_HOST", "127.0.0.1")
 
-KAFKA_BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
+KAFKA_BOOTSTRAP_SERVERS = settings.kafka_bootstrap_servers
 # (consumer group, topic it reads) for the two consumers whose lag we watch
 WATCHED_GROUPS = [
     (os.getenv("DETECTOR_GROUP_ID", "crypto-anomaly-detector"), os.getenv("TRADES_TOPIC", "crypto-trades")),
@@ -38,8 +38,9 @@ WATCHED_GROUPS = [
 COMPLETENESS = Gauge("pipeline_completeness_ratio", "Share of trade IDs stored over the lookback window", ["symbol"])
 MISSING = Gauge("pipeline_missing_trades", "Trade IDs missing over the lookback window", ["symbol"])
 FRESHNESS = Gauge("pipeline_seconds_since_last_trade", "Seconds since the newest stored trade", ["symbol"])
-CONSUMER_LAG = Gauge("pipeline_consumer_lag_messages", "Messages a consumer group has not processed yet",
-                     ["group", "topic"])
+CONSUMER_LAG = Gauge(
+    "pipeline_consumer_lag_messages", "Messages a consumer group has not processed yet", ["group", "topic"]
+)
 
 COMPLETENESS_SQL = """
     SELECT symbol,
@@ -83,13 +84,7 @@ RESOLVE_GAPS_SQL = """
 
 
 def connect_postgres():
-    return psycopg2.connect(
-        host=os.getenv("POSTGRES_HOST", "localhost"),
-        port=int(os.environ["POSTGRES_PORT"]),
-        dbname=os.environ["POSTGRES_DB"],
-        user=os.environ["POSTGRES_USER"],
-        password=os.environ["POSTGRES_PASSWORD"],
-    )
+    return psycopg2.connect(**postgres_args())
 
 
 def completeness(conn, hours):
@@ -98,8 +93,14 @@ def completeness(conn, hours):
         cur.execute(COMPLETENESS_SQL, (hours * 3600,))
         rows = cur.fetchall()
     return [
-        {"symbol": symbol, "stored": stored, "expected": expected, "first_id": first_id,
-         "last_id": last_id, "completeness_pct": round(stored / expected * 100, 4)}
+        {
+            "symbol": symbol,
+            "stored": stored,
+            "expected": expected,
+            "first_id": first_id,
+            "last_id": last_id,
+            "completeness_pct": round(stored / expected * 100, 4),
+        }
         for symbol, stored, expected, first_id, last_id in rows
     ]
 
@@ -134,8 +135,9 @@ def consumer_lag(groups=None):
     """{(group, topic): messages not yet processed}. Missing topics are skipped."""
     lag = {}
     for group, topic in groups or WATCHED_GROUPS:
-        consumer = Consumer({"bootstrap.servers": KAFKA_BOOTSTRAP_SERVERS, "group.id": group,
-                             "enable.auto.commit": False})
+        consumer = Consumer(
+            {"bootstrap.servers": KAFKA_BOOTSTRAP_SERVERS, "group.id": group, "enable.auto.commit": False}
+        )
         try:
             metadata = consumer.list_topics(topic, timeout=5).topics.get(topic)
             if metadata is None or metadata.error is not None:
@@ -163,8 +165,11 @@ def check(conn, hours):
         MISSING.labels(r["symbol"]).set(missing)
         # only log when something is missing, so a healthy pipeline doesn't flood the log
         level = logging.WARNING if missing else logging.DEBUG
-        log.log(level, f"{r['symbol']}: {r['completeness_pct']:.2f}% complete over {hours:g}h "
-                       f"({r['stored']}/{r['expected']} trades, {missing} missing in {open_gaps} gaps)")
+        log.log(
+            level,
+            f"{r['symbol']}: {r['completeness_pct']:.2f}% complete over {hours:g}h "
+            f"({r['stored']}/{r['expected']} trades, {missing} missing in {open_gaps} gaps)",
+        )
     for symbol, seconds in freshness(conn).items():
         FRESHNESS.labels(symbol).set(seconds)
     try:
@@ -183,6 +188,7 @@ def main():
     parser.add_argument("--hours", type=float, default=LOOKBACK_HOURS, help="how far back to check")
     args = parser.parse_args()
 
+    exit_on_sigterm()
     conn = connect_postgres()
     if METRICS_PORT and not args.once:
         start_http_server(METRICS_PORT, addr=METRICS_HOST)
@@ -191,8 +197,9 @@ def main():
             report, gaps = check(conn, args.hours)
             if args.once:
                 for r in report:
-                    log.info(f"{r['symbol']}: {r['completeness_pct']:.2f}% complete "
-                             f"({r['stored']}/{r['expected']} trades)")
+                    log.info(
+                        f"{r['symbol']}: {r['completeness_pct']:.2f}% complete ({r['stored']}/{r['expected']} trades)"
+                    )
                 for symbol, first, last in gaps[:20]:
                     log.info(f"  gap {symbol}: ids {first}-{last} ({last - first + 1} missing)")
                 break
