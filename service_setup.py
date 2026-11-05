@@ -70,8 +70,13 @@ settings = Settings()
 def postgres_args():
     """Arguments for psycopg2.connect. Raises with every missing or bad POSTGRES_* variable named."""
     postgres = PostgresSettings()
-    return {"host": postgres.host, "port": postgres.port, "dbname": postgres.db,
-            "user": postgres.user, "password": postgres.password}
+    return {
+        "host": postgres.host,
+        "port": postgres.port,
+        "dbname": postgres.db,
+        "user": postgres.user,
+        "password": postgres.password,
+    }
 
 
 class JsonFormatter(logging.Formatter):

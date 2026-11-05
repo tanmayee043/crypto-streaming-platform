@@ -8,6 +8,7 @@ import time
 
 import os
 from dotenv import load_dotenv
+
 load_dotenv()
 
 from service_setup import exit_on_sigterm, postgres_args, settings, setup_logging  # noqa: E402
@@ -37,8 +38,9 @@ WATCHED_GROUPS = [
 COMPLETENESS = Gauge("pipeline_completeness_ratio", "Share of trade IDs stored over the lookback window", ["symbol"])
 MISSING = Gauge("pipeline_missing_trades", "Trade IDs missing over the lookback window", ["symbol"])
 FRESHNESS = Gauge("pipeline_seconds_since_last_trade", "Seconds since the newest stored trade", ["symbol"])
-CONSUMER_LAG = Gauge("pipeline_consumer_lag_messages", "Messages a consumer group has not processed yet",
-                     ["group", "topic"])
+CONSUMER_LAG = Gauge(
+    "pipeline_consumer_lag_messages", "Messages a consumer group has not processed yet", ["group", "topic"]
+)
 
 COMPLETENESS_SQL = """
     SELECT symbol,
@@ -91,8 +93,14 @@ def completeness(conn, hours):
         cur.execute(COMPLETENESS_SQL, (hours * 3600,))
         rows = cur.fetchall()
     return [
-        {"symbol": symbol, "stored": stored, "expected": expected, "first_id": first_id,
-         "last_id": last_id, "completeness_pct": round(stored / expected * 100, 4)}
+        {
+            "symbol": symbol,
+            "stored": stored,
+            "expected": expected,
+            "first_id": first_id,
+            "last_id": last_id,
+            "completeness_pct": round(stored / expected * 100, 4),
+        }
         for symbol, stored, expected, first_id, last_id in rows
     ]
 
@@ -127,8 +135,9 @@ def consumer_lag(groups=None):
     """{(group, topic): messages not yet processed}. Missing topics are skipped."""
     lag = {}
     for group, topic in groups or WATCHED_GROUPS:
-        consumer = Consumer({"bootstrap.servers": KAFKA_BOOTSTRAP_SERVERS, "group.id": group,
-                             "enable.auto.commit": False})
+        consumer = Consumer(
+            {"bootstrap.servers": KAFKA_BOOTSTRAP_SERVERS, "group.id": group, "enable.auto.commit": False}
+        )
         try:
             metadata = consumer.list_topics(topic, timeout=5).topics.get(topic)
             if metadata is None or metadata.error is not None:
@@ -156,8 +165,11 @@ def check(conn, hours):
         MISSING.labels(r["symbol"]).set(missing)
         # only log when something is missing, so a healthy pipeline doesn't flood the log
         level = logging.WARNING if missing else logging.DEBUG
-        log.log(level, f"{r['symbol']}: {r['completeness_pct']:.2f}% complete over {hours:g}h "
-                       f"({r['stored']}/{r['expected']} trades, {missing} missing in {open_gaps} gaps)")
+        log.log(
+            level,
+            f"{r['symbol']}: {r['completeness_pct']:.2f}% complete over {hours:g}h "
+            f"({r['stored']}/{r['expected']} trades, {missing} missing in {open_gaps} gaps)",
+        )
     for symbol, seconds in freshness(conn).items():
         FRESHNESS.labels(symbol).set(seconds)
     try:
@@ -185,8 +197,9 @@ def main():
             report, gaps = check(conn, args.hours)
             if args.once:
                 for r in report:
-                    log.info(f"{r['symbol']}: {r['completeness_pct']:.2f}% complete "
-                             f"({r['stored']}/{r['expected']} trades)")
+                    log.info(
+                        f"{r['symbol']}: {r['completeness_pct']:.2f}% complete ({r['stored']}/{r['expected']} trades)"
+                    )
                 for symbol, first, last in gaps[:20]:
                     log.info(f"  gap {symbol}: ids {first}-{last} ({last - first + 1} missing)")
                 break

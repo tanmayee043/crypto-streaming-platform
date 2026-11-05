@@ -77,5 +77,13 @@ class FakeProducer:
 
 def make_trade(trade_id, symbol="BTCUSDT", price="65000.00", quantity="0.01"):
     """A raw trade as the producer publishes it (Binance field names)."""
-    return {"e": "trade", "s": symbol, "t": trade_id, "p": price, "q": quantity,
-            "T": 1_700_000_000_000 + trade_id, "m": False, "received_at": 1_700_000_000_500.0 + trade_id}
+    return {
+        "e": "trade",
+        "s": symbol,
+        "t": trade_id,
+        "p": price,
+        "q": quantity,
+        "T": 1_700_000_000_000 + trade_id,
+        "m": False,
+        "received_at": 1_700_000_000_500.0 + trade_id,
+    }

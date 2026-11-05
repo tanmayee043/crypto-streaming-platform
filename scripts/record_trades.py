@@ -118,8 +118,15 @@ def fetch_history(symbols, count, out, skip=0, start_ms=None, end_ms=None):
             time.sleep(1.5)  # stay well under the REST weight limit
         print(f"{symbol}: fetched {len(fetched)} trades")
         trades.extend(
-            {"e": "trade", "s": symbol, "t": x["id"], "p": x["price"], "q": x["qty"], "T": x["time"],
-             "m": x["isBuyerMaker"]}
+            {
+                "e": "trade",
+                "s": symbol,
+                "t": x["id"],
+                "p": x["price"],
+                "q": x["qty"],
+                "T": x["time"],
+                "m": x["isBuyerMaker"],
+            }
             for x in fetched
         )
     trades.sort(key=lambda t: (t["T"], t["s"], t["t"]))  # interleave symbols in time order
@@ -146,6 +153,7 @@ def main():
     if args.mode == "live":
         trades = asyncio.run(record_live(symbols, args.minutes, args.out))
     else:
+
         def utc_ms(text):
             return int(datetime.fromisoformat(text).replace(tzinfo=timezone.utc).timestamp() * 1000)
 
@@ -155,8 +163,10 @@ def main():
 
     print(f"Wrote {len(trades)} trades to {args.out}")
     for symbol, r in check_ids(trades).items():
-        print(f"  {symbol}: {r['trades']} trades, ids {r['first_id']}..{r['last_id']}, "
-              f"missing={r['missing']} duplicates={r['duplicates']} out_of_order={r['out_of_order']}")
+        print(
+            f"  {symbol}: {r['trades']} trades, ids {r['first_id']}..{r['last_id']}, "
+            f"missing={r['missing']} duplicates={r['duplicates']} out_of_order={r['out_of_order']}"
+        )
 
 
 if __name__ == "__main__":

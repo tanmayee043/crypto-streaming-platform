@@ -11,6 +11,7 @@ from tests.integration.conftest import count_rows
 
 pytestmark = pytest.mark.integration
 
+
 def test_writing_the_same_batch_twice_leaves_one_copy(conn):
     rows = [to_row(make_record(i)) for i in range(1, 101)]
     assert write_batch(conn, rows) == (100, 0)

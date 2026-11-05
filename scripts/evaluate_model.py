@@ -131,14 +131,21 @@ def main():
 
     trades = [json.loads(line) for line in args.file.open()]
     spiked, planted = plant_spikes(trades, args.seed)
-    print(f"{args.file}: {len(trades)} real trades, symbols {sorted({t['s'] for t in trades})}, "
-          f"{len(planted)} planted spikes\n")
+    print(
+        f"{args.file}: {len(trades)} real trades, symbols {sorted({t['s'] for t in trades})}, "
+        f"{len(planted)} planted spikes\n"
+    )
     print(f"{'model':<44} {'flag rate':>7} {'price spikes':>13} {'size spikes':>13}")
     evaluate("v1: raw price/size, mean/stdev, 30 trades", run_v1, trades, spiked, planted)
-    evaluate(f"v2: log return z>{anomaly_detector.PRICE_Z_THRESHOLD:g}, "
-             f"size>={anomaly_detector.SIZE_RATIO_THRESHOLD:g}x median, "
-             f"{anomaly_detector.WINDOW_SIZE} trades",
-             run_v2, trades, spiked, planted)
+    evaluate(
+        f"v2: log return z>{anomaly_detector.PRICE_Z_THRESHOLD:g}, "
+        f"size>={anomaly_detector.SIZE_RATIO_THRESHOLD:g}x median, "
+        f"{anomaly_detector.WINDOW_SIZE} trades",
+        run_v2,
+        trades,
+        spiked,
+        planted,
+    )
 
 
 if __name__ == "__main__":

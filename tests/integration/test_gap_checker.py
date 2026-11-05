@@ -23,7 +23,7 @@ def test_no_gaps_means_100_percent(conn):
 
 
 def test_finds_each_missing_range_per_symbol(conn):
-    store(conn, "BTCUSDT", [1, 2, 3, 6, 7, 9, 10])   # 4-5 and 8 missing
+    store(conn, "BTCUSDT", [1, 2, 3, 6, 7, 9, 10])  # 4-5 and 8 missing
     store(conn, "ETHUSDT", [100, 101, 102])
     gaps = gap_checker.find_gaps(conn, ALL_TIME)
     assert gaps == [("BTCUSDT", 4, 5), ("BTCUSDT", 8, 8)]

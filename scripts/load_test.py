@@ -51,8 +51,9 @@ def histogram_quantile(metrics_text, name, q):
         if line.startswith(f'{name}_bucket{{le="') and "+Inf" not in line:
             bound = float(line.split('le="')[1].split('"')[0])
             buckets.append((bound, float(line.rsplit(" ", 1)[1])))
-    total = next((float(line.rsplit(" ", 1)[1]) for line in metrics_text.splitlines()
-                  if line.startswith(f"{name}_count")), 0)
+    total = next(
+        (float(line.rsplit(" ", 1)[1]) for line in metrics_text.splitlines() if line.startswith(f"{name}_count")), 0
+    )
     for bound, count in buckets:
         if total and count >= q * total:
             return bound
@@ -63,8 +64,10 @@ def stage_latency(port, name):
     """p50 and p95 upper bounds in ms for one stage, read from the service while it's running."""
     with urllib.request.urlopen(f"http://127.0.0.1:{port}/metrics", timeout=5) as response:
         text = response.read().decode()
-    return {f"p{int(q * 100)}_ms_at_most": (bound * 1000 if (bound := histogram_quantile(text, name, q)) else None)
-            for q in (0.5, 0.95)}
+    return {
+        f"p{int(q * 100)}_ms_at_most": (bound * 1000 if (bound := histogram_quantile(text, name, q)) else None)
+        for q in (0.5, 0.95)
+    }
 
 
 def count_rows(conn):
@@ -92,13 +95,23 @@ def main():
     admin = AdminClient({"bootstrap.servers": settings.kafka_bootstrap_servers})
     for topic in topics:
         create_topic(admin, topic, 3)
-    env = {**os.environ, "KAFKA_BOOTSTRAP_SERVERS": settings.kafka_bootstrap_servers,
-           "TRADES_TOPIC": trades_topic, "ANALYTICS_TOPIC": analytics_topic,
-           "TRADES_DLQ_TOPIC": topics[2], "ANALYTICS_DLQ_TOPIC": topics[3], "POSTGRES_DB": DB_NAME,
-           "DETECTOR_GROUP_ID": f"load-{run_id}-detector", "STORAGE_GROUP_ID": f"load-{run_id}-storage",
-           "METRICS_INTERVAL_SECONDS": "5", "PYTHONUNBUFFERED": "1"}
-    procs = [start_consumer({**env, "METRICS_PORT": "8102"}, out_dir / "detector.log", "anomaly_detector.py"),
-             start_consumer({**env, "METRICS_PORT": "8103"}, out_dir / "storage.log", "storage_consumer.py")]
+    env = {
+        **os.environ,
+        "KAFKA_BOOTSTRAP_SERVERS": settings.kafka_bootstrap_servers,
+        "TRADES_TOPIC": trades_topic,
+        "ANALYTICS_TOPIC": analytics_topic,
+        "TRADES_DLQ_TOPIC": topics[2],
+        "ANALYTICS_DLQ_TOPIC": topics[3],
+        "POSTGRES_DB": DB_NAME,
+        "DETECTOR_GROUP_ID": f"load-{run_id}-detector",
+        "STORAGE_GROUP_ID": f"load-{run_id}-storage",
+        "METRICS_INTERVAL_SECONDS": "5",
+        "PYTHONUNBUFFERED": "1",
+    }
+    procs = [
+        start_consumer({**env, "METRICS_PORT": "8102"}, out_dir / "detector.log", "anomaly_detector.py"),
+        start_consumer({**env, "METRICS_PORT": "8103"}, out_dir / "storage.log", "storage_consumer.py"),
+    ]
     conn = psycopg2.connect(**{**settings.postgres_connect_kwargs(), "dbname": DB_NAME})
     try:
         time.sleep(5)  # let both consumers join their groups before the first trade arrives
@@ -115,10 +128,12 @@ def main():
             cur.execute(LATENCY_SQL)
             n, p50, p95, p99, worst, span = (float(v) for v in cur.fetchone())  # NUMERIC -> float
             n = int(n)
-        stages = {"detector": stage_latency(8102, "detector_stage_latency_seconds"),
-                  "detector_batch": stage_latency(8102, "detector_batch_seconds"),
-                  "storage": stage_latency(8103, "storage_stage_latency_seconds"),
-                  "storage_write": stage_latency(8103, "storage_write_seconds")}
+        stages = {
+            "detector": stage_latency(8102, "detector_stage_latency_seconds"),
+            "detector_batch": stage_latency(8102, "detector_batch_seconds"),
+            "storage": stage_latency(8103, "storage_stage_latency_seconds"),
+            "storage_write": stage_latency(8103, "storage_write_seconds"),
+        }
     finally:
         for proc in procs:
             proc.kill()
@@ -127,10 +142,15 @@ def main():
         admin.delete_topics(topics)
         drop_database(settings, DB_NAME)
 
-    result = {"run_id": run_id, "trades": n, "target_rate": args.rate, "send_rate": sent["rate"],
-              "throughput_per_s": round(n / span, 1), "latency_ms": {
-                  "p50": round(p50, 1), "p95": round(p95, 1), "p99": round(p99, 1), "max": round(worst, 1)},
-              "stage_latency": stages}
+    result = {
+        "run_id": run_id,
+        "trades": n,
+        "target_rate": args.rate,
+        "send_rate": sent["rate"],
+        "throughput_per_s": round(n / span, 1),
+        "latency_ms": {"p50": round(p50, 1), "p95": round(p95, 1), "p99": round(p99, 1), "max": round(worst, 1)},
+        "stage_latency": stages,
+    }
     (out_dir / "result.json").write_text(json.dumps(result, indent=2))
     print(f"Stored {n} trades in {span:.1f}s end to end -> {result['throughput_per_s']} trades/s")
     print(f"Latency (receive -> stored): p50 {p50:.0f} ms, p95 {p95:.0f} ms, p99 {p99:.0f} ms, max {worst:.0f} ms")

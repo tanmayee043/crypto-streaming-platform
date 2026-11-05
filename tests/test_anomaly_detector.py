@@ -19,6 +19,7 @@ def small_window(monkeypatch):
 
 # --- robust z-score ---
 
+
 def test_robust_z_of_constant_window_is_zero():
     assert ad.robust_z(5.0, [5.0] * 10) == 0.0
 
@@ -33,8 +34,8 @@ def test_one_outlier_in_the_window_hides_the_next_move_less_than_with_mean_and_s
 
     robust_kept = ad.robust_z(4.0, polluted) / ad.robust_z(4.0, clean)
     classic_kept = classic_z(4.0, polluted) / classic_z(4.0, clean)
-    assert robust_kept > 0.8     # the 4-sigma move still scores at least 80% of its clean score
-    assert classic_kept < 0.6    # the old mean/stdev score loses over 40% of it
+    assert robust_kept > 0.8  # the 4-sigma move still scores at least 80% of its clean score
+    assert classic_kept < 0.6  # the old mean/stdev score loses over 40% of it
 
 
 def test_scale_floor_when_most_of_the_window_is_identical():
@@ -47,6 +48,7 @@ def test_scale_floor_when_most_of_the_window_is_identical():
 
 # --- scoring a trade ---
 
+
 def feed(window, prices, quantity=1.0):
     return [ad.score_trade(window, p, quantity) for p in prices]
 
@@ -55,7 +57,7 @@ def test_no_scores_until_the_window_is_full():
     window = ad.new_window()
     results = feed(window, [100.0, 100.1, 100.0, 100.1, 100.0])
     assert all(price_z is None for price_z, _ in results)  # 5 prices -> only 4 returns so far
-    assert results[-1][1] is None                            # size needs 5 EARLIER trades
+    assert results[-1][1] is None  # size needs 5 EARLIER trades
 
 
 def test_current_trade_is_not_in_its_own_baseline():
@@ -92,8 +94,8 @@ def test_rejects_impossible_trades(price, quantity):
 @pytest.mark.parametrize(
     ("price_z", "size_ratio", "expected"),
     [
-        (None, None, None),        # warming up
-        (6.0, 1.0, None),          # the threshold itself is not an anomaly
+        (None, None, None),  # warming up
+        (6.0, 1.0, None),  # the threshold itself is not an anomaly
         (6.1, 1.0, "price"),
         (-6.1, None, "price"),
         (0.5, 50.0, "volume"),
@@ -127,6 +129,7 @@ def test_revoking_a_partition_drops_only_its_symbols():
 
 # --- process_batch: publish first, commit second ---
 
+
 class FakeConsumer:
     def __init__(self):
         self.commits = []
@@ -137,8 +140,7 @@ class FakeConsumer:
 
 
 def raw_message(trade, offset, partition=0):
-    return FakeMessage(json.dumps(trade).encode(), offset, partition, topic="crypto-trades",
-                       key=trade["s"].encode())
+    return FakeMessage(json.dumps(trade).encode(), offset, partition, topic="crypto-trades", key=trade["s"].encode())
 
 
 def test_results_are_flushed_before_offsets_are_committed():

@@ -11,6 +11,7 @@ import time
 
 import os
 from dotenv import load_dotenv
+
 load_dotenv()
 
 from kafka_helpers import consume_batch, next_offsets, send_to_dead_letter  # noqa: E402
@@ -44,10 +45,12 @@ DEAD_LETTERS = Counter("storage_dead_letters_total", "Messages sent to the dead-
 WRITE_RETRIES = Counter("storage_write_retries_total", "Failed Postgres writes that were retried")
 WRITE_SECONDS = Histogram("storage_write_seconds", "Time to upsert one batch", buckets=LATENCY_BUCKETS)
 # stage 2: the detector's result reached Kafka -> the row is stored
-STAGE_LATENCY = Histogram("storage_stage_latency_seconds", "Detector result in Kafka to row stored",
-                          buckets=LATENCY_BUCKETS)
-END_TO_END = Histogram("pipeline_end_to_end_latency_seconds", "Producer receipt to row stored (same clock)",
-                       buckets=LATENCY_BUCKETS)
+STAGE_LATENCY = Histogram(
+    "storage_stage_latency_seconds", "Detector result in Kafka to row stored", buckets=LATENCY_BUCKETS
+)
+END_TO_END = Histogram(
+    "pipeline_end_to_end_latency_seconds", "Producer receipt to row stored (same clock)", buckets=LATENCY_BUCKETS
+)
 
 # Delivery guarantee: offsets are committed only AFTER a batch is safely in Postgres.
 # If we crash before that, Kafka redelivers the batch on restart, and the upsert on
@@ -101,9 +104,20 @@ def to_millis_datetime(ms):
 def to_row(r, stored_at=None):
     trade_time = to_millis_datetime(r["trade_time"])
     # Decimal(str(...)) keeps the price exactly as sent (e.g. 65000.01, not 65000.0100000000020)
-    return (r["symbol"], int(r["trade_id"]), trade_time, Decimal(str(r["price"])), Decimal(str(r["quantity"])),
-            r["price_z"], r.get("volume_z"), r["is_anomaly"], r["anomaly_type"],
-            r.get("size_ratio"), to_millis_datetime(r.get("received_at")), stored_at)
+    return (
+        r["symbol"],
+        int(r["trade_id"]),
+        trade_time,
+        Decimal(str(r["price"])),
+        Decimal(str(r["quantity"])),
+        r["price_z"],
+        r.get("volume_z"),
+        r["is_anomaly"],
+        r["anomaly_type"],
+        r.get("size_ratio"),
+        to_millis_datetime(r.get("received_at")),
+        stored_at,
+    )
 
 
 def dedupe_rows(rows):
@@ -154,6 +168,7 @@ write_count = 0
 latencies_ms: list = []
 last_metrics_log = time.time()
 
+
 def maybe_log_metrics():
     global write_count, latencies_ms, last_metrics_log
     now = time.time()
@@ -163,10 +178,7 @@ def maybe_log_metrics():
             latencies_ms.sort()
             p50 = latencies_ms[len(latencies_ms) // 2]
             p95 = latencies_ms[int(len(latencies_ms) * 0.95)]
-            log.info(
-                f"Wrote {write_count} rows in {elapsed:.0f}s | "
-                f"latency p50={p50:.0f}ms p95={p95:.0f}ms"
-            )
+            log.info(f"Wrote {write_count} rows in {elapsed:.0f}s | latency p50={p50:.0f}ms p95={p95:.0f}ms")
         write_count = 0
         latencies_ms = []
         last_metrics_log = now

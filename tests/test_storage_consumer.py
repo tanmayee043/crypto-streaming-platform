@@ -60,6 +60,7 @@ def message(trade_id, offset, partition=0):
 
 # --- consumer settings: regression test for the original bug ---
 
+
 def test_auto_commit_is_off():
     config = sc.consumer_config()
     assert config["enable.auto.commit"] is False
@@ -67,6 +68,7 @@ def test_auto_commit_is_off():
 
 
 # --- helpers ---
+
 
 def test_to_row_converts_epoch_ms_to_utc():
     row = sc.to_row(make_record(7))
@@ -94,12 +96,12 @@ def test_dedupe_keeps_last_copy_per_symbol_and_trade_id():
 
 
 def test_next_offsets_is_highest_offset_plus_one_per_partition():
-    messages = [FakeMessage(b"", 10), FakeMessage(b"", 12), FakeMessage(b"", 11),
-                FakeMessage(b"", 3, partition=2)]
+    messages = [FakeMessage(b"", 10), FakeMessage(b"", 12), FakeMessage(b"", 11), FakeMessage(b"", 3, partition=2)]
     assert [(o.partition, o.offset) for o in sc.next_offsets(messages)] == [(0, 13), (2, 4)]
 
 
 # --- process_batch: write first, commit second ---
+
 
 def test_commits_offsets_after_successful_write(written, events):
     consumer = FakeConsumer(events)

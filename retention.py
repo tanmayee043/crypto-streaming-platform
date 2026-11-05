@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 
 import os
 from dotenv import load_dotenv
+
 load_dotenv()
 
 from service_setup import exit_on_sigterm, postgres_args, settings, setup_logging  # noqa: E402
@@ -65,8 +66,10 @@ def ensure_partitions(conn, today, days_ahead=DAYS_AHEAD):
         name = f"trades_{day:%Y%m%d}"
         try:
             with conn, conn.cursor() as cur:
-                cur.execute(f"CREATE TABLE {name} PARTITION OF trades FOR VALUES FROM (%s) TO (%s)",
-                            (utc_midnight(day), utc_midnight(day + timedelta(days=1))))
+                cur.execute(
+                    f"CREATE TABLE {name} PARTITION OF trades FOR VALUES FROM (%s) TO (%s)",
+                    (utc_midnight(day), utc_midnight(day + timedelta(days=1))),
+                )
             created.append(name)
         except psycopg2.errors.CheckViolation:
             # That day's rows are already in the default partition (the service was down over
@@ -109,9 +112,11 @@ def run_once(conn, today=None):
     DATABASE_BYTES.set(size)
     PARTITIONS.set(len(daily_partitions(conn)))
     conn.rollback()
-    log.info(f"Partitions: created {created or 'none'}, dropped {dropped or 'none'}; "
-             f"{deleted} old default rows deleted; database is {size / 1_000_000:.0f} MB "
-             f"(keeping {RETENTION_DAYS} days)")
+    log.info(
+        f"Partitions: created {created or 'none'}, dropped {dropped or 'none'}; "
+        f"{deleted} old default rows deleted; database is {size / 1_000_000:.0f} MB "
+        f"(keeping {RETENTION_DAYS} days)"
+    )
     return created, dropped
 
 

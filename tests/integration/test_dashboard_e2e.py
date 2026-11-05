@@ -31,11 +31,22 @@ def api_url(postgres_url, conn, tmp_path):
     """Starts the API the way the README does, against the test database."""
     url = urlparse(postgres_url)
     port = free_port()
-    env = {**os.environ, "POSTGRES_HOST": url.hostname, "POSTGRES_PORT": str(url.port),
-           "POSTGRES_DB": url.path.lstrip("/"), "POSTGRES_USER": url.username, "POSTGRES_PASSWORD": url.password}
+    env = {
+        **os.environ,
+        "POSTGRES_HOST": url.hostname,
+        "POSTGRES_PORT": str(url.port),
+        "POSTGRES_DB": url.path.lstrip("/"),
+        "POSTGRES_USER": url.username,
+        "POSTGRES_PASSWORD": url.password,
+    }
     with open(tmp_path / "api.log", "w") as log:
-        api = subprocess.Popen([sys.executable, "-m", "uvicorn", "main:app", "--port", str(port)],
-                               cwd=ROOT, env=env, stdout=log, stderr=log)
+        api = subprocess.Popen(
+            [sys.executable, "-m", "uvicorn", "main:app", "--port", str(port)],
+            cwd=ROOT,
+            env=env,
+            stdout=log,
+            stderr=log,
+        )
     base = f"http://127.0.0.1:{port}"
     try:
         deadline = time.monotonic() + 30
@@ -55,9 +66,16 @@ def api_url(postgres_url, conn, tmp_path):
 
 def test_analyst_sees_a_flagged_trade_and_can_run_a_replay(api_url, conn):
     sync_api = pytest.importorskip("playwright.sync_api")
-    write_batch(conn, [to_row(make_record(i), datetime.now(timezone.utc)) for i in range(1, 6)]
-                + [to_row(make_record(6, is_anomaly=True, anomaly_type="price", price_z=8.0, size_ratio=3.0),
-                          datetime.now(timezone.utc))])
+    write_batch(
+        conn,
+        [to_row(make_record(i), datetime.now(timezone.utc)) for i in range(1, 6)]
+        + [
+            to_row(
+                make_record(6, is_anomaly=True, anomaly_type="price", price_z=8.0, size_ratio=3.0),
+                datetime.now(timezone.utc),
+            )
+        ],
+    )
 
     with sync_api.sync_playwright() as p:
         browser = p.chromium.launch()

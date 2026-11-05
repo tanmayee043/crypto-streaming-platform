@@ -41,8 +41,14 @@ def public_subnet(network, compartment):
 
 
 def ubuntu_image(compute, compartment):
-    images = compute.list_images(compartment, operating_system="Canonical Ubuntu", operating_system_version="24.04",
-                                 shape=SHAPE, sort_by="TIMECREATED", sort_order="DESC").data
+    images = compute.list_images(
+        compartment,
+        operating_system="Canonical Ubuntu",
+        operating_system_version="24.04",
+        shape=SHAPE,
+        sort_by="TIMECREATED",
+        sort_order="DESC",
+    ).data
     if not images:
         raise SetupProblem(f"No Ubuntu 24.04 image found for {SHAPE}.")
     return images[0]

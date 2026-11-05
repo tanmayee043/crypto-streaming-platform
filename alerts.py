@@ -6,6 +6,7 @@ import time
 
 import os
 from dotenv import load_dotenv
+
 load_dotenv()
 
 from service_setup import settings  # noqa: E402
@@ -58,15 +59,16 @@ def slo_breaches(health):
     for symbol in health.get("completeness", []):
         if symbol["completeness_pct"] < SLO_COMPLETENESS_PCT:
             breaches[f"completeness:{symbol['symbol']}"] = (
-                f"{symbol['symbol']} completeness {symbol['completeness_pct']:.2f}% "
-                f"(target {SLO_COMPLETENESS_PCT}%)")
+                f"{symbol['symbol']} completeness {symbol['completeness_pct']:.2f}% (target {SLO_COMPLETENESS_PCT}%)"
+            )
     p95 = (health.get("latency_ms") or {}).get("p95")
     if p95 is not None and p95 / 1000 > SLO_LATENCY_P95_SECONDS:
         breaches["latency"] = f"p95 latency {p95 / 1000:.1f}s (target {SLO_LATENCY_P95_SECONDS:g}s)"
     for lag in health.get("consumer_lag", []):
         if lag["messages"] > SLO_CONSUMER_LAG:
             breaches[f"lag:{lag['group']}"] = (
-                f"{lag['group']} is {lag['messages']} messages behind (target < {SLO_CONSUMER_LAG})")
+                f"{lag['group']} is {lag['messages']} messages behind (target < {SLO_CONSUMER_LAG})"
+            )
     return breaches
 
 

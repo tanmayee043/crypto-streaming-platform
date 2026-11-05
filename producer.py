@@ -10,6 +10,7 @@ import time
 
 import os
 from dotenv import load_dotenv
+
 load_dotenv()
 
 from service_setup import exit_on_sigterm, settings, setup_logging  # noqa: E402
@@ -36,7 +37,7 @@ DELIVERY_FAILURES = Counter("producer_delivery_failures_total", "Trades Kafka di
 
 # idempotence: Kafka drops duplicates caused by the producer's own retries
 producer = Producer({"bootstrap.servers": KAFKA_BOOTSTRAP_SERVERS, "enable.idempotence": True})
-#- --- throughput metrics ---- #
+# - --- throughput metrics ---- #
 trade_count = 0
 last_metrics_log = time.time()
 METRICS_INTERVAL_SECONDS = 60
@@ -52,7 +53,8 @@ def maybe_log_metrics():
         trade_count = 0
         last_metrics_log = now
 
-def delivery_report(err,msg):
+
+def delivery_report(err, msg):
     if err:
         DELIVERY_FAILURES.inc()
         print(f"Deliver failed: {err}")
@@ -66,7 +68,7 @@ def send(trade):
             producer.produce(
                 TOPIC,
                 key=trade["s"].encode("utf-8"),
-                value=json.dumps(trade).encode('utf-8'),
+                value=json.dumps(trade).encode("utf-8"),
                 callback=delivery_report,
             )
             return
@@ -86,8 +88,8 @@ async def stream_trades():
             trade["received_at"] = time.time() * 1000  # our clock time, ms — added for latency measurement
             send(trade)
             TRADES_RECEIVED.labels(trade["s"]).inc()
-            producer.poll(0)    # triggers delivery callbacks, non-blocking
-            trade_count+=1
+            producer.poll(0)  # triggers delivery callbacks, non-blocking
+            trade_count += 1
             maybe_log_metrics()
 
 
@@ -106,7 +108,6 @@ async def run_with_reconnect():
             backoff = min(backoff * 2, MAX_BACKOFF_SECONDS)
 
 
-
 if __name__ == "__main__":
     exit_on_sigterm()
     if METRICS_PORT:
@@ -116,4 +117,4 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         log.info("Shutting down.")
     finally:
-        producer.flush()  #anything queued gets sent before exit
+        producer.flush()  # anything queued gets sent before exit

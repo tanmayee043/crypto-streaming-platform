@@ -10,6 +10,7 @@ import time
 
 import os
 from dotenv import load_dotenv
+
 load_dotenv()
 
 from kafka_helpers import consume_batch, next_offsets, send_to_dead_letter  # noqa: E402
@@ -48,11 +49,15 @@ TRADES_SCORED = Counter("detector_trades_total", "Trades processed", ["symbol"])
 ANOMALIES = Counter("detector_anomalies_total", "Anomalies flagged", ["symbol", "type"])
 DEAD_LETTERS = Counter("detector_dead_letters_total", "Trades sent to the dead-letter topic")
 REBUILT_TRADES = Counter("detector_rebuild_trades_total", "Trades re-read from Kafka to rebuild windows")
-BATCH_SECONDS = Histogram("detector_batch_seconds", "Time to score, publish and commit one batch",
-                          buckets=LATENCY_BUCKETS)
+BATCH_SECONDS = Histogram(
+    "detector_batch_seconds", "Time to score, publish and commit one batch", buckets=LATENCY_BUCKETS
+)
 # stage 1 of the end-to-end latency: producer received the trade -> its result is safely in Kafka
-STAGE_LATENCY = Histogram("detector_stage_latency_seconds",
-                          "Producer receipt to detector result acknowledged by Kafka", buckets=LATENCY_BUCKETS)
+STAGE_LATENCY = Histogram(
+    "detector_stage_latency_seconds",
+    "Producer receipt to detector result acknowledged by Kafka",
+    buckets=LATENCY_BUCKETS,
+)
 
 # --- the anomaly model ---
 #
@@ -73,18 +78,20 @@ STAGE_LATENCY = Histogram("detector_stage_latency_seconds",
 # are so skewed (the 99th percentile is ~50x the median) that a ratio to the median is both
 # more reliable and easier to explain than a z-score.
 
-MAD_TO_STDEV = 1 / 0.6745     # makes the MAD comparable to a standard deviation
-MEAN_AD_TO_STDEV = 1.2533     # same, for the mean absolute deviation
+MAD_TO_STDEV = 1 / 0.6745  # makes the MAD comparable to a standard deviation
+MEAN_AD_TO_STDEV = 1.2533  # same, for the mean absolute deviation
 
 
 def robust_z(value, values):
     """How far `value` is from the window's median, in robust standard deviations."""
     median = statistics.median(values)
     deviations = [abs(v - median) for v in values]
-    scale = max(MAD_TO_STDEV * statistics.median(deviations),
-                # fsum, not statistics.mean: mean does exact-fraction maths and was the slowest
-                # part of the whole detector (see the profile in the guide)
-                MEAN_AD_TO_STDEV * math.fsum(deviations) / len(deviations))
+    scale = max(
+        MAD_TO_STDEV * statistics.median(deviations),
+        # fsum, not statistics.mean: mean does exact-fraction maths and was the slowest
+        # part of the whole detector (see the profile in the guide)
+        MEAN_AD_TO_STDEV * math.fsum(deviations) / len(deviations),
+    )
     if scale == 0:
         return 0.0
     return (value - median) / scale
@@ -119,8 +126,7 @@ def score_trade(window, price, quantity):
     return price_z, size_ratio
 
 
-def classify_anomaly(price_z, size_ratio, price_threshold=PRICE_Z_THRESHOLD,
-                     size_threshold=SIZE_RATIO_THRESHOLD):
+def classify_anomaly(price_z, size_ratio, price_threshold=PRICE_Z_THRESHOLD, size_threshold=SIZE_RATIO_THRESHOLD):
     price_hit = price_z is not None and abs(price_z) > price_threshold
     size_hit = size_ratio is not None and size_ratio >= size_threshold
     if price_hit and size_hit:
@@ -135,8 +141,8 @@ def classify_anomaly(price_z, size_ratio, price_threshold=PRICE_Z_THRESHOLD,
 # --- per-symbol state ---
 # Trades are keyed by symbol, so every trade of a symbol lands on the same partition, in
 # order. That lets each symbol keep its own window, and lets us rebuild it from Kafka.
-windows: dict = {}        # symbol -> window
-partition_of: dict = {}   # symbol -> partition it arrives on
+windows: dict = {}  # symbol -> window
+partition_of: dict = {}  # symbol -> partition it arrives on
 
 
 def update_window(trade, partition):
@@ -155,11 +161,11 @@ def build_result(trade, price_z, size_ratio, anomaly_type):
         "received_at": trade.get("received_at"),
         "price": float(trade["p"]),
         "quantity": float(trade["q"]),
-        "price_z": price_z,         # None while the symbol's window is warming up
-        "size_ratio": size_ratio,   # trade size / median size of the window
-        "volume_z": None,           # v1 field, no longer computed
+        "price_z": price_z,  # None while the symbol's window is warming up
+        "size_ratio": size_ratio,  # trade size / median size of the window
+        "volume_z": None,  # v1 field, no longer computed
         "is_anomaly": anomaly_type is not None,
-        "anomaly_type": anomaly_type,   # "price" | "volume" | "both" | None
+        "anomaly_type": anomaly_type,  # "price" | "volume" | "both" | None
     }
 
 
@@ -168,6 +174,7 @@ processed_count = 0
 anomaly_count = 0
 last_metrics_log = time.time()
 
+
 def maybe_log_metrics():
     global processed_count, anomaly_count, last_metrics_log
     now = time.time()
@@ -175,8 +182,7 @@ def maybe_log_metrics():
     if elapsed >= METRICS_INTERVAL_SECONDS:
         rate = anomaly_count / processed_count * 100 if processed_count else 0
         log.info(
-            f"Processed {processed_count} trades in {elapsed:.0f}s, "
-            f"{anomaly_count} anomalies flagged ({rate:.1f}%)"
+            f"Processed {processed_count} trades in {elapsed:.0f}s, {anomaly_count} anomalies flagged ({rate:.1f}%)"
         )
         processed_count = 0
         anomaly_count = 0
@@ -185,16 +191,19 @@ def maybe_log_metrics():
 
 # --- recovery: rebuild the windows from Kafka on startup ---
 
+
 def rebuild_windows(committed):
     """Re-read the last REBUILD_LOOKBACK messages before each partition's start position and
     feed them through the model without publishing anything. Afterwards each symbol's window
     is exactly what it was before the restart, so there is no cold-start blind spot and a
     reprocessed trade gets the same scores it got the first time."""
-    reader = Consumer({
-        "bootstrap.servers": KAFKA_BOOTSTRAP_SERVERS,
-        "group.id": f"{GROUP_ID}-rebuild",  # never commits anything
-        "enable.auto.commit": False,
-    })
+    reader = Consumer(
+        {
+            "bootstrap.servers": KAFKA_BOOTSTRAP_SERVERS,
+            "group.id": f"{GROUP_ID}-rebuild",  # never commits anything
+            "enable.auto.commit": False,
+        }
+    )
     try:
         for tp in committed:
             for symbol in [s for s, p in partition_of.items() if p == tp.partition]:
@@ -229,8 +238,10 @@ def rebuild_windows(committed):
                         pass  # it went to the dead-letter topic the first time round
                     if msg.offset() == start_at - 1:
                         done = True
-            log.info(f"Rebuilt windows for partition {tp.partition} from {replayed} trades "
-                     f"(offsets {read_from}-{start_at - 1})")
+            log.info(
+                f"Rebuilt windows for partition {tp.partition} from {replayed} trades "
+                f"(offsets {read_from}-{start_at - 1})"
+            )
     finally:
         reader.close()
 
@@ -250,6 +261,7 @@ def on_revoke(consumer, partitions):
 # --- the processing loop ---
 
 delivery_errors: list = []
+
 
 def on_delivery(err, msg):
     if err:
@@ -290,8 +302,10 @@ def process_batch(consumer, producer, messages):
         if anomaly_type:
             anomaly_count += 1
             ANOMALIES.labels(trade["s"], anomaly_type).inc()
-            log.info(f"🚨 {anomaly_type.upper()} ANOMALY — {trade['s']} price={result['price']}, "
-                     f"qty={result['quantity']}, price_z={price_z}, size_ratio={size_ratio}")
+            log.info(
+                f"🚨 {anomaly_type.upper()} ANOMALY — {trade['s']} price={result['price']}, "
+                f"qty={result['quantity']}, price_z={price_z}, size_ratio={size_ratio}"
+            )
 
         # Publish the result downstream for storage_consumer.py to persist, keyed by symbol
         producer.produce(
@@ -347,8 +361,10 @@ def main():
     # idempotence: Kafka drops duplicates caused by the producer's own retries
     producer = Producer({"bootstrap.servers": KAFKA_BOOTSTRAP_SERVERS, "enable.idempotence": True})
 
-    log.info(f"Watching '{INPUT_TOPIC}' — window={WINDOW_SIZE} trades per symbol, "
-             f"price z > {PRICE_Z_THRESHOLD}, size >= {SIZE_RATIO_THRESHOLD}x median")
+    log.info(
+        f"Watching '{INPUT_TOPIC}' — window={WINDOW_SIZE} trades per symbol, "
+        f"price z > {PRICE_Z_THRESHOLD}, size >= {SIZE_RATIO_THRESHOLD}x median"
+    )
     log.info(f"Publishing results to '{OUTPUT_TOPIC}'")
 
     try:

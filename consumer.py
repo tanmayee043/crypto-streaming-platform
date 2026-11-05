@@ -6,11 +6,13 @@ from confluent_kafka import Consumer
 KAFKA_BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
 TOPIC = "crypto-trades"
 
-consumer = Consumer({
-    "bootstrap.servers": KAFKA_BOOTSTRAP_SERVERS,
-    "group.id": "crypto-consumer-group",
-    "auto.offset.reset": "earliest",
-})
+consumer = Consumer(
+    {
+        "bootstrap.servers": KAFKA_BOOTSTRAP_SERVERS,
+        "group.id": "crypto-consumer-group",
+        "auto.offset.reset": "earliest",
+    }
+)
 
 consumer.subscribe([TOPIC])
 
@@ -18,7 +20,7 @@ print(f"Listening on topic '{TOPIC}'...")
 
 try:
     while True:
-        msg = consumer.poll(1.0)    # Poll data from kafka every 1 sec
+        msg = consumer.poll(1.0)  # Poll data from kafka every 1 sec
         if not msg:
             continue
 

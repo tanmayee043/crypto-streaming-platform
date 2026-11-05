@@ -13,20 +13,29 @@ import storage_consumer as sc
 from service_setup import JsonFormatter, PostgresSettings, Settings, postgres_args
 from tests.conftest import FakeMessage, FakeProducer, make_record
 
-POSTGRES_VARS = {"POSTGRES_HOST": "db", "POSTGRES_PORT": "5433", "POSTGRES_DB": "crypto",
-                 "POSTGRES_USER": "me", "POSTGRES_PASSWORD": "secret"}
+POSTGRES_VARS = {
+    "POSTGRES_HOST": "db",
+    "POSTGRES_PORT": "5433",
+    "POSTGRES_DB": "crypto",
+    "POSTGRES_USER": "me",
+    "POSTGRES_PASSWORD": "secret",
+}
 
 
 # --- settings ---
 
-@pytest.mark.parametrize("variable, value", [
-    ("WINDOW_SIZE", "abc"),
-    ("WINDOW_SIZE", "1"),
-    ("STORAGE_BATCH_SIZE", "0"),
-    ("RETENTION_DAYS", "0"),
-    ("SLO_COMPLETENESS_PCT", "101"),
-    ("LOG_FORMAT", "yaml"),
-])
+
+@pytest.mark.parametrize(
+    "variable, value",
+    [
+        ("WINDOW_SIZE", "abc"),
+        ("WINDOW_SIZE", "1"),
+        ("STORAGE_BATCH_SIZE", "0"),
+        ("RETENTION_DAYS", "0"),
+        ("SLO_COMPLETENESS_PCT", "101"),
+        ("LOG_FORMAT", "yaml"),
+    ],
+)
 def test_bad_value_stops_startup_and_names_the_variable(monkeypatch, variable, value):
     monkeypatch.setenv(variable, value)
     with pytest.raises(ValidationError, match=variable.lower()):
@@ -54,6 +63,7 @@ def test_missing_postgres_variable_is_named(monkeypatch):
 
 # --- JSON logs ---
 
+
 def test_json_log_line():
     record = logging.LogRecord("producer", logging.WARNING, __file__, 1, "lost %d trades", (3,), None)
     entry = json.loads(JsonFormatter().format(record))
@@ -68,11 +78,13 @@ def test_json_log_line_includes_the_exception():
         raise ValueError("bad trade")
     except ValueError:
         import sys
+
         record = logging.LogRecord("x", logging.ERROR, __file__, 1, "failed", (), sys.exc_info())
     assert "ValueError: bad trade" in json.loads(JsonFormatter().format(record))["exception"]
 
 
 # --- shutdown ---
+
 
 @pytest.fixture
 def clean_shutdown_state():

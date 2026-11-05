@@ -9,8 +9,7 @@ def next_offsets(messages):
     for msg in messages:
         key = (msg.topic(), msg.partition())
         highest[key] = max(highest.get(key, -1), msg.offset())
-    return [TopicPartition(topic, partition, offset + 1)
-            for (topic, partition), offset in sorted(highest.items())]
+    return [TopicPartition(topic, partition, offset + 1) for (topic, partition), offset in sorted(highest.items())]
 
 
 def send_to_dead_letter(producer, topic, msg, error):
